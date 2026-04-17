@@ -1,0 +1,104 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title data-i18n="popupTitle">[B.M] YouTube Shorts 工具箱</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        width: 220px;
+        padding: 12px 14px 14px;
+        font-family: system-ui, "Segoe UI", "Microsoft JhengHei", "Hiragino Sans", sans-serif;
+        font-size: 13px;
+        color: #1a1a1a;
+        background: #fff;
+      }
+      h1 {
+        margin: 0 0 10px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 12px;
+      }
+      .row:last-of-type {
+        margin-bottom: 0;
+      }
+      .label {
+        flex: 1;
+        font-size: 13px;
+        line-height: 1.35;
+        user-select: none;
+      }
+      .switch {
+        position: relative;
+        width: 40px;
+        height: 22px;
+        flex-shrink: 0;
+        cursor: pointer;
+      }
+      .switch input {
+        appearance: none;
+        width: 40px;
+        height: 22px;
+        border-radius: 11px;
+        background: #ccc;
+        position: relative;
+        margin: 0;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .slider {
+        display: none;
+      }
+      .switch input::after {
+        content: "";
+        position: absolute;
+        width: 18px;
+        height: 18px;
+        left: 2px;
+        top: 2px;
+        border-radius: 50%;
+        background: #fff;
+        transition: transform 0.15s;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+      }
+      .switch input:checked {
+        background: #1a73e8;
+      }
+      .switch input:checked::after {
+        transform: translateX(18px);
+      }
+      .switch input:focus-visible {
+        outline: 2px solid #1a73e8;
+        outline-offset: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1 data-i18n="popupTitle">[B.M] YouTube Shorts 工具箱</h1>
+    <div class="row">
+      <span class="label" data-i18n="popupArrowVolumeLabel">左右鍵控制音量</span>
+      <label class="switch" data-i18n-aria-label="popupArrowVolumeLabel" aria-label="左右鍵控制音量">
+        <input id="toggleArrowVolume" type="checkbox" />
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="row">
+      <span class="label" data-i18n="popupPanelExpandRightLabel">功能選單向右/上展開</span>
+      <label class="switch" data-i18n-aria-label="popupPanelExpandRightLabel" aria-label="功能選單向右/上展開">
+        <input id="togglePanelExpandRight" type="checkbox" />
+        <span class="slider"></span>
+      </label>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>
