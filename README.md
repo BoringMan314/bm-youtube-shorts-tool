@@ -55,22 +55,22 @@
 
 ## 安裝方式
 
-### 從 Chrome 線上應用程式商店（若已上架）
+### 從 Chrome 線上應用程式商店（建議）
 
-請在 [Chrome Web Store](https://chromewebstore.google.com/) 搜尋 **「[B.M] YouTube Shorts 工具箱」**，或直接使用本專案提供的商店頁連結安裝。
+請在 [Chrome Web Store](https://chromewebstore.google.com/) 搜尋 **「[B.M] YouTube Shorts 工具箱」** 安裝。已有正式商品頁者，可改寫為與本系列他專案相同、附 **商店頁面** 直連之句型。
 
 ### 從原始碼載入（開發人員模式）
 
-1. 點選本頁綠色 **Code** → **Download ZIP** 解壓，或使用 Git 複製：`git clone https://github.com/BoringMan314/bm-youtube-shorts-tool.git`。
-2. 開啟 Chrome 或 Edge，前往 `chrome://extensions`（Edge：`edge://extensions`）。
-3. 開啟「開發人員模式」→「載入未封裝項目」→ 選取含 [`manifest.json`](manifest.json) 的**專案根目錄**。
+1. 點選本頁綠色 **Code** → **Download ZIP** 解壓，或執行 `git clone https://github.com/BoringMan314/bm-youtube-shorts-tool.git` 複製本倉庫。
+2. 以 **Chrome** 或 **Microsoft Edge** 開啟 `chrome://extensions`（在 Edge 為 `edge://extensions`）。
+3. 開啟「**開發人員模式**」→「**載入未封裝項目**」→ 選取含 [`manifest.json`](manifest.json) 的**專案根目錄**（勿選子資料夾）。
 4. 進入任一 Shorts 頁面（`https://www.youtube.com/shorts/...`）驗證工具箱是否出現在右側操作列。
 
 ---
 
 ## 本機開發與測試
 
-修改 [`content.js`](content.js)、[`content.css`](content.css)、[`background.js`](background.js)、[`popup.html`](popup.html)、[`popup.js`](popup.js) 或 [`_locales/`](_locales/) 後，在 `chrome://extensions` 對本擴充按 **重新載入**，再重新整理 Shorts 分頁（若改彈出視窗則關閉後再開一次）即可驗證。
+修改 [`content.js`](content.js)、[`content.css`](content.css)、[`background.js`](background.js)、[`popup.html`](popup.html)、[`popup.js`](popup.js) 或 [`_locales/`](_locales/) 後，在 `chrome://extensions` 將本擴充**重新載入**，再重新整理 Shorts 分頁驗證；若變更彈出視窗，請關閉後再開啟一次。
 
 ---
 
@@ -81,7 +81,7 @@
 - **彈出視窗** [`popup.html`](popup.html) / [`popup.js`](popup.js)：搭配 `chrome.storage` 儲存選項。
 - **樣式層** [`content.css`](content.css)：與腳本內影子樣式同步，降低 YouTube 動態 DOM 變動影響。
 - **定位策略**：以 Shorts 右側操作列原生節點為錨點，透過 `MutationObserver` 維持掛載與狀態更新。
-- **多語系**：以 `chrome.i18n` 與 [`_locales/`](_locales/) 提供 `zh_TW` / `zh_CN` / `en` / `ja`。
+- **多語系**：以 `chrome.i18n` 與 [`_locales/`](_locales/) 提供 `zh_TW` / `zh_CN` / `ja_JP` / `en_US`。
 
 ---
 
@@ -93,38 +93,28 @@
 | [`content.js`](content.js) | 工具箱 UI、倍速、逐幀、截圖、錄製、下載流程與狀態同步 |
 | [`content.css`](content.css) | 工具箱外觀、按鈕狀態、與右欄對齊樣式 |
 | [`background.js`](background.js) | 背景錄製／下載、訊息傳遞與例外處理 |
-| [`popup.html`](popup.html) / [`popup.js`](popup.js) | 擴充圖示彈出視窗與選項介面 |
-| [`_locales/`](_locales/) | 多語系支援（包含 `zh_TW`、`zh_CN`、`en`、`ja`） |
-| [`icons/`](icons/) | 擴充功能圖示（16／48／128 px） |
-| [`screenshot/`](screenshot/) | 商店與說明用截圖 |
+| [`popup.html`](popup.html)／[`popup.js`](popup.js) | 擴充圖示彈出視窗與選項介面 |
+| [`_locales/`](_locales/) | 多語系字串（`zh_TW`、`zh_CN`、`ja_JP`、`en_US`） |
 | [`privacy-policy.html`](privacy-policy.html) | 隱私權政策（上架商店所需之公開網頁） |
+| [`icons/`](icons/) | 工具列與商店用圖示：icon.png |
+| [`screenshot/`](screenshot/) | 商店與說明用截圖 |
 | [`LICENSE`](LICENSE) | MIT 授權 |
-
-**Chrome Web Store 常用截圖尺寸參考**：
-
-| 檔案 | 用途 |
-|------|------|
-| `screenshot/screenshot_440x280.png` | 小型宣傳圖 |
-| `screenshot/screenshot_1280x800.png` | 寬螢幕截圖 |
-| `screenshot/screenshot_1280x800.psd` | 寬螢幕截圖原始檔（Photoshop） |
-| `screenshot/screenshot_1400x560.png` | 大型宣傳圖 |
-
 
 ---
 
 ## 版本與多語系
 
-- **版本號**：定義於 [`manifest.json`](manifest.json) 的 `version`（目前 **0.1.0**）。
-- **預設語系**：繁體中文（`zh_TW`）。
-- **已內建**：繁體中文（`zh_TW`）、简体中文（`zh_CN`）、English（`en`）、日本語（`ja`）；依瀏覽器介面語言自動選用。
+- **版本**：以 [`manifest.json`](manifest.json) 的 `version` 為準。
+- **預設語系**：`zh_TW`（`default_locale`）。
+- **內建語系**：`zh_TW`、`zh_CN`、`ja_JP`、`en_US`（路徑為 `_locales/<code>/messages.json`）。實際顯示依瀏覽器語系與遞減規則。
 
 ---
 
 ## 隱私說明
 
-本擴充功能**不蒐集、不上傳**任何個人資料或瀏覽記錄；未使用分析工具、廣告追蹤或遠端載入程式碼。僅在本機分頁中處理 Shorts 互動所需邏輯，並透過 `chrome.storage` 儲存使用者設定（例如左右鍵音量開關、面板展開方向）。詳細內容請參閱 [`privacy-policy.html`](privacy-policy.html)。
+本擴充**不蒐集、不上傳**可識別個人之帳戶或瀏覽內容；**未內建**遠端可執行程式、分析或廣告追蹤。僅在本機分頁中處理 Shorts 互動所需邏輯，並以 `chrome.storage` 儲存選項（例如左右鍵音量、面板展開方向）。詳見 [`privacy-policy.html`](privacy-policy.html)。
 
-**上架提醒**：提交至 Chrome Web Store 時，須於後台填寫隱私實踐聲明，並提供該政策頁面的**公開 HTTPS 網址**（建議透過 [GitHub Pages](https://pages.github.com/) 託管）。
+**上架提醒**：若上架 Chrome Web Store，須在開發人員後台完成隱私實踐聲明，並提供本政策之**公開 HTTPS 網址**（建議以 [GitHub Pages](https://pages.github.com/) 託管專案內的 `privacy-policy.html`）。
 
 ---
 
@@ -146,10 +136,10 @@ git push origin main
 
 1. **遞增版本**：修改 `manifest.json` 中的 `version`（例如從 `0.1.0` 提升至 `0.1.1`）。
 2. **封裝套件**：將專案內容壓縮為 ZIP 檔。
-   - **必要檔案**：`manifest.json`, `content.js`, `content.css`, `background.js`, `popup.html`, `popup.js`, `privacy-policy.html`, `icons/`, `_locales/`, `LICENSE`。
-   - **排除檔案**：`.git/`, `.gitignore`, `screenshot/`, `README.md`, `*.psd`, `*.zip`, `*.url`。
+   - **必要檔案**：`manifest.json`, `content.js`, `content.css`, `background.js`, `popup.html`, `popup.js`, `privacy-policy.html`, `icons/`, `_locales/`, `LICENSE`
+   - **建議不打包**：`.git/`, `.gitignore`, `README.md`, `screenshot/`, `*.psd`, `*.zip`, `*.url`
 3. **上傳審核**：在控制台選擇項目 →「套件」→「上傳新套件」。
-4. **提交送審**：檢查文案、截圖與隱私資訊無誤後，點擊「提交送審」。
+4. **提交送審**：確認版號、商店文案、截圖、隱私欄位與 `privacy-policy` 公開網址無誤後，點擊「**提交送審**」。
 
 ---
 
@@ -161,4 +151,4 @@ git push origin main
 
 ## 問題與建議
 
-歡迎透過 [GitHub Issues](https://github.com/BoringMan314/bm-youtube-shorts-tool/issues) 回報錯誤或提出改善建議（回報時請提供瀏覽器版本、介面語言與重現步驟）。
+歡迎透過 [GitHub Issues](https://github.com/BoringMan314/bm-youtube-shorts-tool/issues) 回報錯誤或提出改善建議。回報時請一併提供瀏覽器版本、**介面語言**及重現步驟。

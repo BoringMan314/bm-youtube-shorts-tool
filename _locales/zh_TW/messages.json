@@ -1,35 +1,47 @@
 {
-  "extName": {
-    "message": "[B.M] YouTube Shorts 工具箱",
-    "description": "擴充功能名稱（Chrome 商店／擴充功能清單）。"
+  "ariaDownload": {
+    "message": "下載",
+    "description": "下載按鈕的無障礙標籤。"
   },
-  "extDescription": {
-    "message": "適用於 YouTube Shorts（youtube.com/shorts/*）的瀏覽器擴充功能：倍速、截圖、錄製、下載等多功能插件。",
-    "description": "擴充功能說明（商店／清單）。"
+  "ariaFrameStep": {
+    "message": "逐幀播放",
+    "description": "逐幀播放按鈕的無障礙標籤。"
   },
   "ariaPlaybackSpeed": {
     "message": "播放速度",
     "description": "倍速按鈕的無障礙標籤。"
   },
-  "ariaToolbox": {
-    "message": "工具箱",
-    "description": "工具箱主按鈕的無障礙標籤。"
-  },
-  "ariaDownload": {
-    "message": "下載",
-    "description": "下載按鈕的無障礙標籤。"
+  "ariaRecord": {
+    "message": "錄製",
+    "description": "錄製按鈕的無障礙標籤。"
   },
   "ariaScreenshot": {
     "message": "截圖",
     "description": "截圖按鈕的無障礙標籤。"
   },
-  "ariaRecord": {
-    "message": "錄製",
-    "description": "錄製按鈕的無障礙標籤。"
+  "ariaToolbox": {
+    "message": "工具箱",
+    "description": "工具箱主按鈕的無障礙標籤。"
   },
-  "ariaFrameStep": {
-    "message": "逐幀播放",
-    "description": "逐幀播放按鈕的無障礙標籤。"
+  "captionDownload": {
+    "message": "下載",
+    "description": "下載功能按鈕下方標籤。"
+  },
+  "captionFrameStep": {
+    "message": "逐幀",
+    "description": "逐幀播放功能按鈕下方標籤。"
+  },
+  "captionRecord": {
+    "message": "錄製",
+    "description": "錄製功能按鈕下方標籤。"
+  },
+  "captionRemix": {
+    "message": "Remix",
+    "description": "Remix 功能按鈕下方標籤。"
+  },
+  "captionScreenshot": {
+    "message": "截圖",
+    "description": "截圖功能按鈕下方標籤。"
   },
   "captionSpeed": {
     "message": "速度",
@@ -39,25 +51,9 @@
     "message": "工具箱",
     "description": "工具箱主按鈕下方標籤。"
   },
-  "captionRemix": {
-    "message": "Remix",
-    "description": "Remix 功能按鈕下方標籤。"
-  },
-  "captionDownload": {
-    "message": "下載",
-    "description": "下載功能按鈕下方標籤。"
-  },
-  "captionScreenshot": {
-    "message": "截圖",
-    "description": "截圖功能按鈕下方標籤。"
-  },
-  "captionRecord": {
-    "message": "錄製",
-    "description": "錄製功能按鈕下方標籤。"
-  },
-  "captionFrameStep": {
-    "message": "逐幀",
-    "description": "逐幀播放功能按鈕下方標籤。"
+  "downloadFailed": {
+    "message": "下載啟動失敗。",
+    "description": "下載失敗時顯示的訊息。"
   },
   "downloadNotImplemented": {
     "message": "下載功能尚未實作。",
@@ -67,21 +63,13 @@
     "message": "目前抓不到可下載的影片來源。",
     "description": "下載時未取得影片來源網址。"
   },
-  "downloadFailed": {
-    "message": "下載啟動失敗。",
-    "description": "下載失敗時顯示的訊息。"
+  "extDescription": {
+    "message": "適用於 YouTube Shorts（youtube.com/shorts/*）的瀏覽器擴充功能：倍速、截圖、錄製、下載等多功能插件。",
+    "description": "擴充功能簡介（繁體中文）"
   },
-  "screenshotNoVideoSource": {
-    "message": "目前抓不到可截圖的影片來源。",
-    "description": "截圖時未取得可用影片來源。"
-  },
-  "screenshotFailed": {
-    "message": "截圖失敗。",
-    "description": "截圖流程失敗時顯示的訊息。"
-  },
-  "popupTitle": {
+  "extName": {
     "message": "[B.M] YouTube Shorts 工具箱",
-    "description": "擴充功能彈出視窗標題。"
+    "description": "擴充功能名稱（繁體中文）"
   },
   "popupArrowVolumeLabel": {
     "message": "左右鍵控制音量",
@@ -90,5 +78,17 @@
   "popupPanelExpandRightLabel": {
     "message": "功能選單向右/上展開",
     "description": "彈出視窗中的選單展開方向開關標籤。"
+  },
+  "popupTitle": {
+    "message": "[B.M] YouTube Shorts 工具箱",
+    "description": "擴充功能彈出視窗標題。"
+  },
+  "screenshotFailed": {
+    "message": "截圖失敗。",
+    "description": "截圖流程失敗時顯示的訊息。"
+  },
+  "screenshotNoVideoSource": {
+    "message": "目前抓不到可截圖的影片來源。",
+    "description": "截圖時未取得可用影片來源。"
   }
 }
