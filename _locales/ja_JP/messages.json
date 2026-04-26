@@ -1,0 +1,94 @@
+{
+  "ariaDownload": {
+    "message": "ダウンロード",
+    "description": "ダウンロードボタンのアクセシビリティラベル。"
+  },
+  "ariaFrameStep": {
+    "message": "コマ送り再生",
+    "description": "コマ送り再生ボタンのアクセシビリティラベル。"
+  },
+  "ariaPlaybackSpeed": {
+    "message": "再生速度",
+    "description": "倍速ボタンのアクセシビリティラベル。"
+  },
+  "ariaRecord": {
+    "message": "録画",
+    "description": "録画ボタンのアクセシビリティラベル。"
+  },
+  "ariaScreenshot": {
+    "message": "スクリーンショット",
+    "description": "スクリーンショットボタンのアクセシビリティラベル。"
+  },
+  "ariaToolbox": {
+    "message": "ツールボックス",
+    "description": "ツールボックス主ボタンのアクセシビリティラベル。"
+  },
+  "captionDownload": {
+    "message": "保存",
+    "description": "ダウンロード機能ボタン下のキャプション。"
+  },
+  "captionFrameStep": {
+    "message": "コマ",
+    "description": "コマ送り再生機能ボタン下のキャプション。"
+  },
+  "captionRecord": {
+    "message": "録画",
+    "description": "録画機能ボタン下のキャプション。"
+  },
+  "captionRemix": {
+    "message": "Remix",
+    "description": "Remix 機能ボタン下のキャプション。"
+  },
+  "captionScreenshot": {
+    "message": "画像",
+    "description": "スクリーンショット機能ボタン下のキャプション。"
+  },
+  "captionSpeed": {
+    "message": "速度",
+    "description": "ボタン下のキャプション。"
+  },
+  "captionToolbox": {
+    "message": "ツール",
+    "description": "ツールボックス主ボタン下のキャプション。"
+  },
+  "downloadFailed": {
+    "message": "ダウンロードの開始に失敗しました。",
+    "description": "ダウンロード開始に失敗した時の文言。"
+  },
+  "downloadNotImplemented": {
+    "message": "ダウンロード機能はまだ未実装です。",
+    "description": "ダウンロードボタンを押した時に表示する案内文。"
+  },
+  "downloadNoVideoSource": {
+    "message": "ダウンロード可能な動画ソースを取得できません。",
+    "description": "ダウンロード時に動画URLが見つからない場合の文言。"
+  },
+  "extDescription": {
+    "message": "YouTube Shorts（youtube.com/shorts/*）向けのブラウザ拡張機能：Shorts の右側アクション列をツールボックス化し、再生速度・コマ送り再生・スクリーンショット・録画・ダウンロードを提供。拡張アイコンからオプション（左右キー音量、メニュー展開方向）を開けるほか、できるだけネイティブの見た目と操作テンポに合わせています。",
+    "description": "拡張機能の説明（日本語）"
+  },
+  "extName": {
+    "message": "[B.M] YouTube Shorts ツールボックス",
+    "description": "拡張機能名（日本語）"
+  },
+  "popupArrowVolumeLabel": {
+    "message": "左右キーで音量調整",
+    "description": "ポップアップ内の左右キー音量トグルのラベル。"
+  },
+  "popupPanelExpandRightLabel": {
+    "message": "機能メニューを右/上に展開",
+    "description": "ポップアップ内のメニュー展開方向トグルのラベル。"
+  },
+  "popupTitle": {
+    "message": "[B.M] YouTube Shorts ツールボックス",
+    "description": "拡張機能ポップアップのタイトル。"
+  },
+  "screenshotFailed": {
+    "message": "スクリーンショットに失敗しました。",
+    "description": "スクリーンショット処理に失敗した時の文言。"
+  },
+  "screenshotNoVideoSource": {
+    "message": "スクリーンショット可能な動画ソースを取得できません。",
+    "description": "スクリーンショット時に有効な動画ソースが見つからない場合の文言。"
+  }
+}

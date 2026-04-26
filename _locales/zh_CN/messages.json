@@ -1,35 +1,47 @@
 {
-  "extName": {
-    "message": "[B.M] YouTube Shorts 工具箱",
-    "description": "扩展名称（Chrome 商店／扩展列表）。"
+  "ariaDownload": {
+    "message": "下载",
+    "description": "下载按钮的无障碍标签。"
   },
-  "extDescription": {
-    "message": "适用于 YouTube Shorts（youtube.com/shorts/*）的浏览器扩展：将 Shorts 右侧操作栏整合为工具箱，提供 倍速、逐帧播放、截图、录制、下载等功能，并可从扩展图标打开选项（左右键音量、菜单展开方向）；并尽量贴近原生样式与交互节奏。",
-    "description": "扩展说明（商店／列表）。"
+  "ariaFrameStep": {
+    "message": "逐帧播放",
+    "description": "逐帧播放按钮的无障碍标签。"
   },
   "ariaPlaybackSpeed": {
     "message": "播放速度",
     "description": "倍速按钮的无障碍标签。"
   },
-  "ariaToolbox": {
-    "message": "工具箱",
-    "description": "工具箱主按钮的无障碍标签。"
-  },
-  "ariaDownload": {
-    "message": "下载",
-    "description": "下载按钮的无障碍标签。"
+  "ariaRecord": {
+    "message": "录制",
+    "description": "录制按钮的无障碍标签。"
   },
   "ariaScreenshot": {
     "message": "截图",
     "description": "截图按钮的无障碍标签。"
   },
-  "ariaRecord": {
-    "message": "录制",
-    "description": "录制按钮的无障碍标签。"
+  "ariaToolbox": {
+    "message": "工具箱",
+    "description": "工具箱主按钮的无障碍标签。"
   },
-  "ariaFrameStep": {
-    "message": "逐帧播放",
-    "description": "逐帧播放按钮的无障碍标签。"
+  "captionDownload": {
+    "message": "下载",
+    "description": "下载功能按钮下方标签。"
+  },
+  "captionFrameStep": {
+    "message": "逐帧",
+    "description": "逐帧播放功能按钮下方标签。"
+  },
+  "captionRecord": {
+    "message": "录制",
+    "description": "录制功能按钮下方标签。"
+  },
+  "captionRemix": {
+    "message": "Remix",
+    "description": "Remix 功能按钮下方标签。"
+  },
+  "captionScreenshot": {
+    "message": "截图",
+    "description": "截图功能按钮下方标签。"
   },
   "captionSpeed": {
     "message": "速度",
@@ -39,25 +51,9 @@
     "message": "工具箱",
     "description": "工具箱主按钮下方标签。"
   },
-  "captionRemix": {
-    "message": "Remix",
-    "description": "Remix 功能按钮下方标签。"
-  },
-  "captionDownload": {
-    "message": "下载",
-    "description": "下载功能按钮下方标签。"
-  },
-  "captionScreenshot": {
-    "message": "截图",
-    "description": "截图功能按钮下方标签。"
-  },
-  "captionRecord": {
-    "message": "录制",
-    "description": "录制功能按钮下方标签。"
-  },
-  "captionFrameStep": {
-    "message": "逐帧",
-    "description": "逐帧播放功能按钮下方标签。"
+  "downloadFailed": {
+    "message": "下载启动失败。",
+    "description": "下载失败时显示的提示。"
   },
   "downloadNotImplemented": {
     "message": "下载功能尚未实现。",
@@ -67,21 +63,13 @@
     "message": "当前无法获取可下载的视频来源。",
     "description": "下载时未取得视频来源地址。"
   },
-  "downloadFailed": {
-    "message": "下载启动失败。",
-    "description": "下载失败时显示的提示。"
+  "extDescription": {
+    "message": "适用于 YouTube Shorts（youtube.com/shorts/*）的浏览器扩展：将 Shorts 右侧操作栏整合为工具箱，提供 倍速、逐帧播放、截图、录制、下载等功能，并可从扩展图标打开选项（左右键音量、菜单展开方向）；并尽量贴近原生样式与交互节奏。",
+    "description": "扩展功能简介（简体中文）"
   },
-  "screenshotNoVideoSource": {
-    "message": "当前无法获取可截图的视频来源。",
-    "description": "截图时未取得可用视频来源。"
-  },
-  "screenshotFailed": {
-    "message": "截图失败。",
-    "description": "截图流程失败时显示的提示。"
-  },
-  "popupTitle": {
+  "extName": {
     "message": "[B.M] YouTube Shorts 工具箱",
-    "description": "扩展弹出窗口标题。"
+    "description": "扩展功能名称（简体中文）"
   },
   "popupArrowVolumeLabel": {
     "message": "左右键控制音量",
@@ -90,5 +78,17 @@
   "popupPanelExpandRightLabel": {
     "message": "功能菜单向右/上展开",
     "description": "弹出窗口中的菜单展开方向开关标签。"
+  },
+  "popupTitle": {
+    "message": "[B.M] YouTube Shorts 工具箱",
+    "description": "扩展弹出窗口标题。"
+  },
+  "screenshotFailed": {
+    "message": "截图失败。",
+    "description": "截图流程失败时显示的提示。"
+  },
+  "screenshotNoVideoSource": {
+    "message": "当前无法获取可截图的视频来源。",
+    "description": "截图时未取得可用视频来源。"
   }
 }
