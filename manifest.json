@@ -6,20 +6,24 @@
   "default_locale": "zh_TW",
   "homepage_url": "https://github.com/BoringMan314/bm-youtube-shorts-tool",
   "icons": {
-    "16": "icons/icon16.png",
-    "48": "icons/icon48.png",
-    "128": "icons/icon128.png"
+    "128": "icons/icon.png"
   },
+  "permissions": [
+    "downloads",
+    "tabs",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://*.googlevideo.com/*",
+    "https://*.youtube.com/*"
+  ],
   "action": {
     "default_icon": {
-      "16": "icons/icon16.png",
-      "48": "icons/icon48.png",
-      "128": "icons/icon128.png"
+      "128": "icons/icon.png"
     },
     "default_popup": "popup.html"
   },
-  "permissions": ["downloads", "tabs", "scripting", "storage"],
-  "host_permissions": ["https://*.googlevideo.com/*", "https://*.youtube.com/*"],
   "background": {
     "service_worker": "background.js"
   },
@@ -29,8 +33,12 @@
         "https://www.youtube.com/shorts/*",
         "https://youtube.com/shorts/*"
       ],
-      "js": ["content.js"],
-      "css": ["content.css"],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
       "run_at": "document_idle"
     }
   ]
