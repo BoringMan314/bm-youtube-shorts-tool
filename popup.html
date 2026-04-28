@@ -1,16 +1,17 @@
 <!doctype html>
-<html>
+<html lang="zh-Hant">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title data-i18n="popupTitle">[B.M] YouTube Shorts 工具箱</title>
+    <title data-i18n="popupTitle"></title>
     <style>
       * {
         box-sizing: border-box;
       }
       body {
         margin: 0;
-        width: 220px;
+        min-width: 260px;
+        max-width: 320px;
         padding: 12px 14px 14px;
         font-family: system-ui, "Segoe UI", "Microsoft JhengHei", "Hiragino Sans", sans-serif;
         font-size: 13px;
@@ -81,20 +82,65 @@
         outline: 2px solid #1a73e8;
         outline-offset: 2px;
       }
+      .bm-cycle {
+        box-sizing: border-box;
+        flex-shrink: 0;
+        width: 48px;
+        height: 48px;
+        padding: 0;
+        margin: 0;
+        border: none;
+        border-radius: 50%;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: inherit;
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1;
+        letter-spacing: -0.02em;
+        color: #fff;
+        background: rgba(0, 0, 0, 0.55);
+        transition: filter 0.12s ease, transform 0.1s ease;
+      }
+      .bm-cycle:hover {
+        filter: brightness(1.12);
+      }
+      .bm-cycle:active {
+        filter: brightness(0.92);
+        transform: scale(0.96);
+      }
+      .bm-cycle:focus-visible {
+        outline: 2px solid #1a73e8;
+        outline-offset: 2px;
+      }
     </style>
   </head>
   <body>
-    <h1 data-i18n="popupTitle">[B.M] YouTube Shorts 工具箱</h1>
+    <h1 data-i18n="popupTitle"></h1>
     <div class="row">
-      <span class="label" data-i18n="popupArrowVolumeLabel">左右鍵控制音量</span>
-      <label class="switch" data-i18n-aria-label="popupArrowVolumeLabel" aria-label="左右鍵控制音量">
+      <span class="label" data-i18n="popupDefaultShortSpeedLabel"></span>
+      <button type="button" id="btnDefaultSpeed" class="bm-cycle">
+        <span id="lblDefaultSpeed">1×</span>
+      </button>
+    </div>
+    <div class="row">
+      <span class="label" data-i18n="popupDefaultHoldSpeedLabel"></span>
+      <button type="button" id="btnHoldSpeed" class="bm-cycle">
+        <span id="lblHoldSpeed">2×</span>
+      </button>
+    </div>
+    <div class="row">
+      <span class="label" data-i18n="popupArrowVolumeLabel"></span>
+      <label class="switch" data-i18n-aria-label="popupArrowVolumeLabel">
         <input id="toggleArrowVolume" type="checkbox" />
         <span class="slider"></span>
       </label>
     </div>
     <div class="row">
-      <span class="label" data-i18n="popupPanelExpandRightLabel">功能選單向右/上展開</span>
-      <label class="switch" data-i18n-aria-label="popupPanelExpandRightLabel" aria-label="功能選單向右/上展開">
+      <span class="label" data-i18n="popupPanelExpandRightLabel"></span>
+      <label class="switch" data-i18n-aria-label="popupPanelExpandRightLabel">
         <input id="togglePanelExpandRight" type="checkbox" />
         <span class="slider"></span>
       </label>
