@@ -83,6 +83,22 @@
     "message": "[B.M] YouTube Shorts 工具箱",
     "description": "扩展弹出窗口标题。"
   },
+  "popupAriaDefaultShortSpeedCycle": {
+    "message": "循环默认 Shorts 倍速（1×、1.5×、2×、3×）",
+    "description": "设置弹窗内默认倍速循环按钮的无障碍标签。"
+  },
+  "popupAriaHoldSpeedCycle": {
+    "message": "循环按住画面时使用的倍速（1×、1.5×、2×、3×）",
+    "description": "设置弹窗内按住倍速循环按钮的无障碍标签。"
+  },
+  "popupDefaultHoldSpeedLabel": {
+    "message": "预设按住画面的倍速",
+    "description": "设置弹窗：按住画面加速的默认倍率。"
+  },
+  "popupDefaultShortSpeedLabel": {
+    "message": "预设短视频倍速",
+    "description": "设置弹窗：一般播放的默认倍率。"
+  },
   "screenshotFailed": {
     "message": "截图失败。",
     "description": "截图流程失败时显示的提示。"

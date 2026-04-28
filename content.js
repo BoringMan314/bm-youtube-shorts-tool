@@ -9,6 +9,8 @@
 	const SPEED_STORAGE_KEY = 'bmYtsToolboxSpeed';
 	const VOLUME_HOTKEY_STORAGE_KEY = 'bmYtsArrowVolumeEnabled';
 	const PANEL_EXPAND_RIGHT_STORAGE_KEY = 'bmYtsPanelExpandRight';
+	const STORAGE_KEY_DEFAULT_SPEED_INDEX = 'bmYts3xOptsDefaultSpeedIndex';
+	const STORAGE_KEY_HOLD_SPEED_INDEX = 'bmYts3xOptsHoldSpeedIndex';
 	const w = window;
 	document.documentElement.setAttribute(CONTROLLER_ATTR, 'toolbox');
 	try {
@@ -26,15 +28,26 @@
 	}
 
 	let currentIndex = 0;
-	function loadPersistedSpeedIndex() {
+	let holdActive = false;
+	let holdPointerId = null;
+	let holdSpeedIndex = 2;
+
+	function readSessionIndex() {
 		try {
 			const raw = sessionStorage.getItem(SPEED_STORAGE_KEY);
+			if (raw === null || raw === '') return null;
 			const value = Number(raw);
-			if (!Number.isFinite(value)) return 0;
+			if (!Number.isFinite(value)) return null;
 			return Math.max(0, Math.min(SPEEDS.length - 1, Math.floor(value)));
 		} catch (_) {
-			return 0;
+			return null;
 		}
+	}
+
+	function clampSpeedIndex(i) {
+		const n = Number(i);
+		if (!Number.isFinite(n)) return 0;
+		return Math.max(0, Math.min(SPEEDS.length - 1, Math.floor(n)));
 	}
 
 	function persistSpeedIndex() {
@@ -43,7 +56,10 @@
 		} catch (_) {}
 	}
 
-	currentIndex = loadPersistedSpeedIndex();
+	try {
+		const sessInit = readSessionIndex();
+		if (sessInit !== null) currentIndex = sessInit;
+	} catch (_) {}
 
 	let mountObserver = null;
 	let videoObserver = null;
@@ -83,14 +99,26 @@
 				{
 					[VOLUME_HOTKEY_STORAGE_KEY]: true,
 					[PANEL_EXPAND_RIGHT_STORAGE_KEY]: true,
+					[STORAGE_KEY_DEFAULT_SPEED_INDEX]: 0,
+					[STORAGE_KEY_HOLD_SPEED_INDEX]: 2,
 				},
 				(res) => {
 					if (chrome.runtime.lastError) return;
 					leftRightVolumeEnabled = res[VOLUME_HOTKEY_STORAGE_KEY] !== false;
 					panelExpandRightEnabled = res[PANEL_EXPAND_RIGHT_STORAGE_KEY] !== false;
+					holdSpeedIndex = clampSpeedIndex(res[STORAGE_KEY_HOLD_SPEED_INDEX]);
+					const sess = readSessionIndex();
+					if (sess !== null) {
+						currentIndex = sess;
+					} else {
+						currentIndex = clampSpeedIndex(res[STORAGE_KEY_DEFAULT_SPEED_INDEX]);
+						persistSpeedIndex();
+					}
 					if (speedRootEl instanceof HTMLElement && speedRootEl.isConnected) {
 						speedRootEl.toggleAttribute('data-expand-up', !panelExpandRightEnabled);
 					}
+					updateSpeedUiLockedState();
+					applyToAllLikelyVideos();
 				}
 			);
 		} catch (_) {
@@ -115,6 +143,16 @@
 					if (speedRootEl instanceof HTMLElement && speedRootEl.isConnected) {
 						speedRootEl.toggleAttribute('data-expand-up', !panelExpandRightEnabled);
 					}
+				}
+				if (changes[STORAGE_KEY_HOLD_SPEED_INDEX]) {
+					holdSpeedIndex = clampSpeedIndex(changes[STORAGE_KEY_HOLD_SPEED_INDEX].newValue);
+					if (holdActive) applyToAllLikelyVideos();
+				}
+				if (changes[STORAGE_KEY_DEFAULT_SPEED_INDEX]) {
+					currentIndex = clampSpeedIndex(changes[STORAGE_KEY_DEFAULT_SPEED_INDEX].newValue);
+					persistSpeedIndex();
+					updateSpeedUiLockedState();
+					applyToAllLikelyVideos();
 				}
 			});
 		} catch (_) {}
@@ -394,6 +432,13 @@
 		return SPEEDS[currentIndex];
 	}
 
+	function getEffectivePlaybackRate() {
+		if (framePlaybackEnabled) return getSpeed();
+		if (recordingSession || manualRecordSession || suspendSpeedSync) return getSpeed();
+		if (holdActive) return SPEEDS[holdSpeedIndex];
+		return getSpeed();
+	}
+
 	function findSpeedIndexByRate(rate) {
 		for (let i = 0; i < SPEEDS.length; i++) {
 			if (Math.abs(SPEEDS[i] - rate) < 0.01) return i;
@@ -402,6 +447,7 @@
 	}
 
 	function syncIndexFromObservedRate(rate) {
+		if (holdActive) return false;
 		const idx = findSpeedIndexByRate(rate);
 		if (idx < 0 || idx === currentIndex) return false;
 		currentIndex = idx;
@@ -1451,7 +1497,7 @@
 
 	function applyPlaybackRateTo(video) {
 		if (!video) return;
-		const rate = getSpeed();
+		const rate = getEffectivePlaybackRate();
 		try {
 			video.playbackRate = rate;
 			video.defaultPlaybackRate = rate;
@@ -2511,7 +2557,7 @@
 		v.dataset[VIDEO_HOOK_KEY] = '1';
 		v.addEventListener('ratechange', () => {
 			if (suspendSpeedSync) return;
-			const want = getSpeed();
+			const want = getEffectivePlaybackRate();
 			if (Math.abs(v.playbackRate - want) > 0.01) {
 				applyPlaybackRateTo(v);
 			}
@@ -2546,6 +2592,130 @@
 			attributes: true,
 			attributeFilter: ['hidden', 'class', 'style'],
 		});
+	}
+
+	function playbackHoldGestureAllowed() {
+		if (framePlaybackEnabled) return false;
+		if (recordingSession) return false;
+		if (manualRecordSession) return false;
+		if (suspendSpeedSync) return false;
+		return true;
+	}
+
+	function shouldStartHold(e) {
+		if (!playbackHoldGestureAllowed()) return false;
+		if (!e.isPrimary) return false;
+		if (e.pointerType === 'mouse' && e.button !== 0) return false;
+		const t = e.target;
+		if (!(t instanceof Element)) return false;
+		if (t.closest('input, textarea, select, [contenteditable="true"]')) return false;
+		if (t.closest('#' + ROOT_ID)) return false;
+		if (isInsideCommentsPanel(t)) return false;
+		if (
+			t.closest('#actions, ytd-reel-player-overlay-renderer #actions, reel-action-bar-item-view-model')
+		)
+			return false;
+
+		const v = getActiveShortsVideo();
+		if (!v) return false;
+		const x = e.clientX;
+		const y = e.clientY;
+		const r = v.getBoundingClientRect();
+		if (x < r.left || x > r.right || y < r.top || y > r.bottom) return false;
+
+		const actions = document.querySelector('ytd-reel-player-overlay-renderer #actions');
+		if (actions) {
+			const ar = actions.getBoundingClientRect();
+			if (x >= ar.left && x <= ar.right && y >= ar.top && y <= ar.bottom) return false;
+		}
+		return true;
+	}
+
+	const HOLD_ACTIVATE_MS = 200;
+
+	let holdListenersInstalled = false;
+	function installHoldListeners() {
+		if (holdListenersInstalled) return;
+		holdListenersInstalled = true;
+
+		let pendingPointerId = null;
+		let pendingTimer = null;
+
+		function tearDownReleaseListeners() {
+			window.removeEventListener('pointerup', onRelease, true);
+			window.removeEventListener('pointercancel', onRelease, true);
+			window.removeEventListener('blur', onBlurWhilePendingOrHold, false);
+		}
+
+		function suppressSyntheticClickAfterHold() {
+			function blockClick(ev) {
+				ev.preventDefault();
+				ev.stopImmediatePropagation();
+				document.removeEventListener('click', blockClick, true);
+			}
+			document.addEventListener('click', blockClick, true);
+		}
+
+		function deactivateHoldPlayback() {
+			if (!holdActive) return;
+			holdActive = false;
+			holdPointerId = null;
+			applyToAllLikelyVideos();
+		}
+
+		function activateHoldPlayback(pid) {
+			holdActive = true;
+			holdPointerId = pid;
+			applyToAllLikelyVideos();
+		}
+
+		function cancelPendingHold() {
+			if (pendingTimer !== null) {
+				clearTimeout(pendingTimer);
+				pendingTimer = null;
+			}
+			pendingPointerId = null;
+		}
+
+		function onBlurWhilePendingOrHold() {
+			cancelPendingHold();
+			tearDownReleaseListeners();
+			deactivateHoldPlayback();
+		}
+
+		function onRelease(e) {
+			if (pendingPointerId === null) return;
+			if (e && e.pointerId !== undefined && e.pointerId !== pendingPointerId) return;
+
+			const hadAccelerated = holdActive;
+
+			cancelPendingHold();
+			tearDownReleaseListeners();
+
+			if (hadAccelerated) {
+				deactivateHoldPlayback();
+				suppressSyntheticClickAfterHold();
+			}
+		}
+
+		document.documentElement.addEventListener(
+			'pointerdown',
+			(e) => {
+				if (holdActive || pendingPointerId !== null) return;
+				if (!shouldStartHold(e)) return;
+
+				pendingPointerId = e.pointerId;
+				pendingTimer = setTimeout(() => {
+					pendingTimer = null;
+					activateHoldPlayback(pendingPointerId);
+				}, HOLD_ACTIVATE_MS);
+
+				window.addEventListener('pointerup', onRelease, true);
+				window.addEventListener('pointercancel', onRelease, true);
+				window.addEventListener('blur', onBlurWhilePendingOrHold, false);
+			},
+			true
+		);
 	}
 
 	function initObservers() {
@@ -2664,6 +2834,7 @@
 		startBootstrapRetries();
 	}
 	setupArrowVolumeSettingSync();
+	installHoldListeners();
 	w.__BM_TOOLBOX_DIAG__ = () => ({
 		hasRoot: !!(speedRootEl && speedRootEl.isConnected),
 		rootVars:
