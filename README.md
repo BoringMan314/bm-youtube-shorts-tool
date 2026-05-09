@@ -57,7 +57,7 @@
 
 ### 從 Chrome 線上應用程式商店（建議）
 
-請在 [Chrome Web Store](https://chromewebstore.google.com/) 搜尋 **「[B.M] YouTube Shorts 工具箱」** 安裝。已有正式商品頁者，可改寫為與本系列他專案相同、附 **商店頁面** 直連之句型。
+請在 [Chrome Web Store](https://chromewebstore.google.com/) 搜尋 **「[B.M] YouTube Shorts 工具箱」** ，或點擊名稱從商店頁面安裝。
 
 ### 從原始碼載入（開發人員模式）
 
