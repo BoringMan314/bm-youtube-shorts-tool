@@ -12,7 +12,6 @@
 	const STORAGE_KEY_DEFAULT_SPEED_INDEX = 'bmYts3xOptsDefaultSpeedIndex';
 	const STORAGE_KEY_HOLD_SPEED_INDEX = 'bmYts3xOptsHoldSpeedIndex';
 	const w = window;
-	document.documentElement.setAttribute(CONTROLLER_ATTR, 'toolbox');
 	try {
 		if (w[INSTANCE_KEY] && typeof w[INSTANCE_KEY].destroy === 'function') {
 			w[INSTANCE_KEY].destroy();
@@ -66,6 +65,10 @@
 	let reapplyTimer = null;
 	let bootstrapRetryTimer = null;
 	let bootstrapRetryCount = 0;
+	let mutatingDom = false;
+	let mountWorkScheduled = false;
+	let lastAnchorFixAt = 0;
+	let lastOverlayNeutralizeAt = 0;
 	let mainTickInterval = null;
 	let speedRootEl = null;
 	let remixRowEl = null;
@@ -160,7 +163,9 @@
 
 	const SHADOW_STYLES = `
 #${ROOT_ID}{--bm-btn-size:48px;--bm-item-height:92px;--bm-item-gap:0px;--bm-caption-color:var(--yt-spec-text-primary,#fff);--bm-top-row-offset:0px;--bm-row-speed:0px;--bm-row-frame:92px;--bm-row-screenshot:184px;--bm-row-record:276px;--bm-row-download:368px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;width:var(--bm-btn-size);margin-bottom:0;flex-shrink:0;pointer-events:auto;row-gap:0;position:relative;overflow:visible;z-index:2147483646}
-#${ROOT_ID} .yts-speed-btn{box-sizing:border-box;width:var(--bm-btn-size);height:var(--bm-btn-size);padding:0;margin:0;border:none;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:Roboto,"YouTube Noto",Arial,sans-serif;font-size:13px;font-weight:600;line-height:1;letter-spacing:-0.02em;color:var(--yt-spec-text-primary,#fff);background-color:var(--yt-spec-10-percent-layer,rgba(255,255,255,.1));backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);transition:filter .12s ease,transform .1s ease}
+#${ROOT_ID} .yts-speed-btn{box-sizing:border-box;width:var(--bm-btn-size);height:var(--bm-btn-size);padding:0;margin:0;border:none;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:Roboto,"YouTube Noto",Arial,sans-serif;font-size:13px;font-weight:600;line-height:1;letter-spacing:-0.02em;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);transition:filter .12s ease,transform .1s ease}
+#${ROOT_ID}[data-bm-theme="dark"] .yts-speed-btn{color:#fff;background-color:rgba(255,255,255,.1)}
+#${ROOT_ID}[data-bm-theme="light"] .yts-speed-btn{color:#0f0f0f;background-color:rgba(0,0,0,.05)}
 #${ROOT_ID} .yts-speed-btn.yts-speed-locked{cursor:not-allowed;filter:saturate(.7)}
 #${ROOT_ID} .yts-speed-lock-icon{display:none}
 #${ROOT_ID} .yts-speed-btn.yts-speed-locked .yts-speed-lock-icon{display:block}
@@ -177,7 +182,9 @@
 #${ROOT_ID} .yts-speed-value{font-size:20px;font-weight:600;line-height:1;letter-spacing:-0.02em}
 #${ROOT_ID} .yts-speed-btn:hover{filter:brightness(1.14)}
 #${ROOT_ID} .yts-speed-btn:active{filter:brightness(.92);transform:scale(.96)}
-#${ROOT_ID} .yts-speed-caption{margin-top:6px;max-width:56px;text-align:center;font-family:Roboto,"YouTube Noto",Arial,sans-serif;font-size:12px;font-weight:500;line-height:1.2;color:var(--bm-caption-color,var(--yt-spec-text-primary,#fff))!important;opacity:1;white-space:nowrap}
+#${ROOT_ID} .yts-speed-caption{margin-top:6px;max-width:56px;text-align:center;font-family:Roboto,"YouTube Noto",Arial,sans-serif;font-size:12px;font-weight:500;line-height:1.2;color:var(--bm-caption-color,inherit)!important;opacity:1;white-space:nowrap}
+#${ROOT_ID}[data-bm-theme="dark"] .yts-speed-caption{color:#fff!important}
+#${ROOT_ID}[data-bm-theme="light"] .yts-speed-caption{color:#0f0f0f!important}
 #${ROOT_ID} .yts-toolbox-icon{width:25px;height:25px;display:block;margin:0 auto}
 #${ROOT_ID} .yts-toolbox-panel{position:absolute;top:0;left:calc(100% + 8px);display:block;width:var(--bm-btn-size);min-height:calc(var(--bm-row-download) + var(--bm-item-height));opacity:0;transform:translateX(-4px) scale(.98);transform-origin:left top;pointer-events:none;transition:opacity .15s ease,transform .15s ease;z-index:2147483647}
 #${ROOT_ID}[data-open="1"] .yts-toolbox-panel{opacity:1;transform:translateX(0) scale(1);pointer-events:auto}
@@ -218,53 +225,90 @@
 		return ref;
 	}
 
+	function getThemeFallbacks() {
+		if (isYouTubeDarkTheme()) {
+			return { btnBg: 'rgba(255, 255, 255, 0.1)', btnFg: '#fff', captionFg: '#fff' };
+		}
+		return { btnBg: 'rgba(0, 0, 0, 0.05)', btnFg: '#0f0f0f', captionFg: '#0f0f0f' };
+	}
+
+	function readVisibleColor(el) {
+		if (!(el instanceof HTMLElement)) return '';
+		const cs = getComputedStyle(el);
+		const color = cs.color;
+		if (color && color !== 'rgba(0, 0, 0, 0)' && color !== 'transparent') return color;
+		return '';
+	}
+
+	function readVisibleBackground(el) {
+		if (!(el instanceof HTMLElement)) return '';
+		const cs = getComputedStyle(el);
+		let bg = cs.backgroundColor;
+		if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') return bg;
+		const fill = el.querySelector('.yt-spec-touch-feedback-shape__fill');
+		if (fill instanceof HTMLElement) {
+			bg = getComputedStyle(fill).backgroundColor;
+			if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') return bg;
+		}
+		return '';
+	}
+
+	function findNativeLikeCaptionElement() {
+		const likeInner = findLikeInner();
+		if (!likeInner) return null;
+		const row = findActionRowElement(likeInner);
+		if (!(row instanceof HTMLElement)) return null;
+		const nodes = row.querySelectorAll(
+			'yt-formatted-string, .yt-core-attributed-string, .yt-spec-button-shape-next__button-text-content, span'
+		);
+		for (const el of nodes) {
+			if (!(el instanceof HTMLElement)) continue;
+			if (el.closest('button')) continue;
+			if (!(el.textContent || '').trim()) continue;
+			return el;
+		}
+		return null;
+	}
+
 	function syncSpeedUiWithNativeLike() {
 		const root = speedRootEl;
 		if (!root || !root.isConnected) return;
 		const btns = Array.from(root.querySelectorAll('.yts-speed-btn'));
+		const caps = Array.from(root.querySelectorAll('.yts-speed-caption'));
 		const stylableBtns = btns.filter(
 			(btn) => btn instanceof HTMLElement && !btn.classList.contains('yts-recording-active')
 		);
 		if (!btns.length) return;
 
+		const dark = isYouTubeDarkTheme();
+		root.setAttribute('data-bm-theme', dark ? 'dark' : 'light');
+
+		const fallbacks = getThemeFallbacks();
+		let btnBg = fallbacks.btnBg;
+		let btnFg = fallbacks.btnFg;
+		let capFg = fallbacks.captionFg;
+
 		const ref = findNativeLikeButtonForStyle();
-		if (!ref || !ref.isConnected) {
-			stylableBtns.forEach((btn) => {
-				if (!(btn instanceof HTMLElement)) return;
-				btn.style.removeProperty('background-color');
-				btn.style.removeProperty('color');
-			});
-			return;
+		if (ref && ref.isConnected) {
+			const nativeBg = readVisibleBackground(ref);
+			const nativeFg = readVisibleColor(ref);
+			if (nativeBg) btnBg = nativeBg;
+			if (nativeFg) btnFg = nativeFg;
 		}
 
-		if (ref.getAttribute('aria-pressed') === 'true') {
-			stylableBtns.forEach((btn) => {
-				if (!(btn instanceof HTMLElement)) return;
-				btn.style.removeProperty('background-color');
-				btn.style.removeProperty('color');
-			});
-			return;
-		}
+		const captionEl = findNativeLikeCaptionElement();
+		const nativeCapFg = readVisibleColor(captionEl);
+		if (nativeCapFg) capFg = nativeCapFg;
 
-		const cs = getComputedStyle(ref);
-		let bg = cs.backgroundColor;
-		if (!bg || bg === 'rgba(0, 0, 0, 0)' || bg === 'transparent') {
-			const fill = ref.querySelector('.yt-spec-touch-feedback-shape__fill');
-			if (fill instanceof HTMLElement) {
-				bg = getComputedStyle(fill).backgroundColor;
-			}
-		}
-		if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
-			stylableBtns.forEach((btn) => {
-				if (btn instanceof HTMLElement) btn.style.backgroundColor = bg;
-			});
-		}
-		const fg = cs.color;
-		if (fg) {
-			stylableBtns.forEach((btn) => {
-				if (btn instanceof HTMLElement) btn.style.color = fg;
-			});
-		}
+		root.style.setProperty('--bm-caption-color', capFg);
+		stylableBtns.forEach((btn) => {
+			if (!(btn instanceof HTMLElement)) return;
+			btn.style.backgroundColor = btnBg;
+			btn.style.color = btnFg;
+		});
+		caps.forEach((cap) => {
+			if (cap instanceof HTMLElement) cap.style.color = capFg;
+		});
 	}
 
 	function syncToolboxLayoutWithNative() {
@@ -784,7 +828,35 @@
 		return !!(el.closest('ytd-reel-player-overlay-renderer') || el.closest('#shorts-player'));
 	}
 
+	function getVisibleReelOverlays() {
+		const out = [];
+		document.querySelectorAll('ytd-reel-player-overlay-renderer').forEach((o) => {
+			if (!(o instanceof HTMLElement) || isInsideCommentsPanel(o)) return;
+			const r = o.getBoundingClientRect();
+			if (r.width < 8 || r.height < 8) return;
+			if (r.bottom <= 0 || r.top >= window.innerHeight) return;
+			out.push({ el: o, area: r.width * r.height });
+		});
+		out.sort((a, b) => b.area - a.area);
+		return out.map((x) => x.el);
+	}
+
+	function scopeHasActionBar(scope) {
+		if (!scope) return false;
+		return !!(
+			(scope instanceof Element && scope.querySelector('#actions')) ||
+			querySelectorDeep('#actions', scope) ||
+			querySelectorDeep('#like-button', scope) ||
+			querySelectorDeep('like-button-view-model', scope) ||
+			querySelectorDeep('segmented-like-dislike-button-view-model', scope)
+		);
+	}
+
 	function getShortsReelUiScopeRoot() {
+		for (const overlay of getVisibleReelOverlays()) {
+			if (scopeHasActionBar(overlay)) return overlay;
+		}
+
 		const overlay =
 			document.querySelector('ytd-reel-player-overlay-renderer') ||
 			querySelectorDeep('ytd-reel-player-overlay-renderer', document.documentElement);
@@ -852,6 +924,13 @@
 				}
 			}
 		}
+	}
+
+	function maybeNeutralizeBlockingOverlays() {
+		const now = Date.now();
+		if (now - lastOverlayNeutralizeAt < 3000) return;
+		lastOverlayNeutralizeAt = now;
+		neutralizeBlockingOverlays();
 	}
 
 	function neutralizeBlockingOverlays() {
@@ -934,24 +1013,29 @@
 		const column = row.parentElement;
 		if (!column) return false;
 		if (row.contains(root) || root.contains(row) || root.contains(column)) return false;
-		if (!safeInsertBefore(column, root, row)) return false;
-		const rn = root.getRootNode();
-		if (rn instanceof ShadowRoot) {
-			ensureStylesInShadowRoot(rn);
-		}
-		if (getComputedStyle(column).flexDirection === 'column-reverse') {
-			const rr = root.getBoundingClientRect();
-			const lr = row.getBoundingClientRect();
-			if (!(rr.top < lr.top)) {
-				if (row.nextSibling) {
-					safeInsertBefore(column, root, row.nextSibling);
-				} else {
-					safeInsertBefore(column, root, null);
-				}
-				if (!(root.getBoundingClientRect().top < row.getBoundingClientRect().top)) {
-					safeInsertBefore(column, root, row);
+		mutatingDom = true;
+		try {
+			if (!safeInsertBefore(column, root, row)) return false;
+			const rn = root.getRootNode();
+			if (rn instanceof ShadowRoot) {
+				ensureStylesInShadowRoot(rn);
+			}
+			if (getComputedStyle(column).flexDirection === 'column-reverse') {
+				const rr = root.getBoundingClientRect();
+				const lr = row.getBoundingClientRect();
+				if (!(rr.top < lr.top)) {
+					if (row.nextSibling) {
+						safeInsertBefore(column, root, row.nextSibling);
+					} else {
+						safeInsertBefore(column, root, null);
+					}
+					if (!(root.getBoundingClientRect().top < row.getBoundingClientRect().top)) {
+						safeInsertBefore(column, root, row);
+					}
 				}
 			}
+		} finally {
+			mutatingDom = false;
 		}
 		return true;
 	}
@@ -1017,7 +1101,12 @@
 	function ensureSpeedAnchorIntact() {
 		if (!speedRootEl || !speedRootEl.isConnected) return;
 		if (!isInReelActionUi(speedRootEl)) {
-			speedRootEl.remove();
+			mutatingDom = true;
+			try {
+				speedRootEl.remove();
+			} finally {
+				mutatingDom = false;
+			}
 			speedRootEl = null;
 			remixRowEl = null;
 			remixButtonEl = null;
@@ -1026,9 +1115,36 @@
 		const likeRow = findFallbackAnchorRow();
 		if (!likeRow || !likeRow.parentElement) return;
 		const column = likeRow.parentElement;
-		if (speedRootEl.parentElement !== column || speedRootEl.nextSibling !== likeRow) {
-			attachRootAtRow(speedRootEl, likeRow);
+		if (speedRootEl.parentElement === column && speedRootEl.nextSibling === likeRow) return;
+		if (Date.now() - lastAnchorFixAt < 500) return;
+		lastAnchorFixAt = Date.now();
+		attachRootAtRow(speedRootEl, likeRow);
+	}
+
+	function findLikeByAriaFallback(scope) {
+		if (!scope) return null;
+		const actions =
+			(scope instanceof Element && scope.querySelector('#actions')) ||
+			querySelectorDeep('#actions', scope);
+		if (!(actions instanceof HTMLElement)) return null;
+		const buttons = querySelectorAllDeep('button', actions);
+		for (const btn of buttons) {
+			if (!(btn instanceof HTMLButtonElement)) continue;
+			const label = (
+				btn.getAttribute('aria-label') ||
+				btn.getAttribute('title') ||
+				btn.textContent ||
+				''
+			).toLowerCase();
+			if (!/(like|喜歡|喜歡這|点赞|讚|いいね)/i.test(label)) continue;
+			return (
+				btn.closest('#like-button') ||
+				btn.closest('like-button-view-model') ||
+				btn.closest('segmented-like-dislike-button-view-model') ||
+				btn
+			);
 		}
+		return null;
 	}
 
 	function findLikeInner() {
@@ -1037,15 +1153,35 @@
 		const hit =
 			querySelectorDeep('#like-button', scope) ||
 			querySelectorDeep('like-button-view-model', scope) ||
-			querySelectorDeep('segmented-like-dislike-button-view-model', scope);
+			querySelectorDeep('segmented-like-dislike-button-view-model', scope) ||
+			findLikeByAriaFallback(scope);
 		if (!hit || !isInReelActionUi(hit)) return null;
 		return hit;
 	}
 
+	function findFirstActionBarRow(scope) {
+		if (!scope) return null;
+		const actions =
+			(scope instanceof Element && scope.querySelector('#actions')) ||
+			querySelectorDeep('#actions', scope);
+		if (!(actions instanceof HTMLElement)) return null;
+		for (const child of actions.children) {
+			if (!(child instanceof HTMLElement)) continue;
+			if (!isInReelActionUi(child)) continue;
+			const btn = child.querySelector('button');
+			if (!(btn instanceof HTMLButtonElement)) continue;
+			return findActionRowElement(btn) || child;
+		}
+		return null;
+	}
+
 	function findFallbackAnchorRow() {
 		const likeInner = findLikeInner();
-		if (!likeInner || !likeInner.isConnected) return null;
-		return findActionRowElement(likeInner);
+		if (likeInner && likeInner.isConnected) {
+			const likeRow = findActionRowElement(likeInner);
+			if (likeRow) return likeRow;
+		}
+		return findFirstActionBarRow(getShortsReelUiScopeRoot());
 	}
 
 	function isCommentsPanelOpen() {
@@ -2718,18 +2854,39 @@
 		);
 	}
 
+	function scheduleMountWork() {
+		if (mountWorkScheduled || mutatingDom) return;
+		mountWorkScheduled = true;
+		requestAnimationFrame(() => {
+			mountWorkScheduled = false;
+			runMountWork();
+		});
+	}
+
+	function runMountWork() {
+		removeExternal3xWidgets();
+		if (!ensureMounted()) {
+			syncControllerAttr();
+			return;
+		}
+		syncControllerAttr();
+		ensureSpeedAnchorIntact();
+		if (!videoObserver) setupVideoHooks();
+		scheduleReapply();
+	}
+
 	function initObservers() {
 		if (mountObserver) mountObserver.disconnect();
 		mountObserver = new MutationObserver(() => {
-			if (!(speedRootEl && speedRootEl.isConnected)) {
-				speedRootEl = null;
-				if (ensureMounted()) setupVideoHooks();
-			} else {
-				ensureSpeedAnchorIntact();
-				scheduleReapply();
-			}
+			if (mutatingDom) return;
+			if (!(speedRootEl && speedRootEl.isConnected)) speedRootEl = null;
+			scheduleMountWork();
 		});
-		mountObserver.observe(document.documentElement, {
+		const observeRoot =
+			document.querySelector('ytd-shorts') ||
+			document.querySelector('#shorts-container') ||
+			document.documentElement;
+		mountObserver.observe(observeRoot, {
 			childList: true,
 			subtree: true,
 		});
@@ -2797,12 +2954,22 @@
 		if (w[INSTANCE_KEY] && w[INSTANCE_KEY].destroy === destroyInstance) {
 			delete w[INSTANCE_KEY];
 		}
+		document.documentElement.removeAttribute(CONTROLLER_ATTR);
+	}
+
+	function syncControllerAttr() {
+		const mounted = !!(speedRootEl && speedRootEl.isConnected);
+		const cur = document.documentElement.getAttribute(CONTROLLER_ATTR);
+		if (mounted && cur !== 'toolbox') {
+			document.documentElement.setAttribute(CONTROLLER_ATTR, 'toolbox');
+		} else if (!mounted && cur === 'toolbox') {
+			document.documentElement.removeAttribute(CONTROLLER_ATTR);
+		}
 	}
 
 	function tick() {
-		document.documentElement.setAttribute(CONTROLLER_ATTR, 'toolbox');
-		removeExternal3xWidgets();
-		if (!ensureMounted()) return;
+		runMountWork();
+		if (!(speedRootEl && speedRootEl.isConnected)) return;
 		if (recordingSession) {
 			if (recordingSession.shortId === getCurrentShortId()) {
 				const ratio = Math.max(
@@ -2816,10 +2983,7 @@
 		} else {
 			updateDownloadRecordingUi(0, false);
 		}
-		neutralizeBlockingOverlays();
-		ensureSpeedAnchorIntact();
-		if (!videoObserver) setupVideoHooks();
-		scheduleReapply();
+		maybeNeutralizeBlockingOverlays();
 		syncToolboxLayoutWithNative();
 		syncSpeedUiWithNativeLike();
 	}

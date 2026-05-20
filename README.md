@@ -3,6 +3,7 @@
 [![Manifest V3](https://img.shields.io/badge/Manifest-V3-blue)](https://developer.chrome.com/docs/extensions/mv3/)
 [![Site](https://img.shields.io/badge/site-YouTube_Shorts-FF0000?logo=youtube)](https://www.youtube.com/shorts/)
 [![GitHub](https://img.shields.io/badge/GitHub-bm--youtube--shorts--tool-181717?logo=github)](https://github.com/BoringMan314/bm-youtube-shorts-tool)
+[![GitHub all releases](https://img.shields.io/github/downloads/BoringMan314/bm-youtube-shorts-tool/total)](https://github.com/BoringMan314/bm-youtube-shorts-tool/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 適用於 [YouTube Shorts](https://www.youtube.com/shorts/)（`youtube.com/shorts/*`）的瀏覽器擴充功能：將 Shorts 右側操作列整合成工具箱，提供倍速、逐幀播放、截圖、錄製、下載等功能，並可從擴充圖示開啟選項（左右鍵音量、選單展開方向）；並盡量對齊原生樣式與互動節奏。
