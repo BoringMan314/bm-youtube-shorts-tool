@@ -82,7 +82,7 @@
 - **彈出視窗** [`popup.html`](popup.html) / [`popup.js`](popup.js)：搭配 `chrome.storage` 儲存選項。
 - **樣式層** [`content.css`](content.css)：與腳本內影子樣式同步，降低 YouTube 動態 DOM 變動影響。
 - **定位策略**：以 Shorts 右側操作列原生節點為錨點，透過 `MutationObserver` 維持掛載與狀態更新。
-- **多語系**：以 `chrome.i18n` 與 [`_locales/`](_locales/) 提供 `zh_TW` / `zh_CN` / `ja_JP` / `en_US`。
+- **多語系**：以 `chrome.i18n` 與 [`_locales/`](_locales/) 提供 `zh_TW` / `zh_CN` / `ja` / `en_US`。
 
 ---
 
@@ -95,7 +95,7 @@
 | [`content.css`](content.css) | 工具箱外觀、按鈕狀態、與右欄對齊樣式 |
 | [`background.js`](background.js) | 背景錄製／下載、訊息傳遞與例外處理 |
 | [`popup.html`](popup.html)／[`popup.js`](popup.js) | 擴充圖示彈出視窗與選項介面 |
-| [`_locales/`](_locales/) | 多語系字串（`zh_TW`、`zh_CN`、`ja_JP`、`en_US`） |
+| [`_locales/`](_locales/) | 多語系字串（`zh_TW`、`zh_CN`、`ja`、`en_US`） |
 | [`privacy-policy.html`](privacy-policy.html) | 隱私權政策（上架商店所需之公開網頁） |
 | [`icons/`](icons/) | 工具列與商店用圖示：icon.png |
 | [`screenshot/`](screenshot/) | 商店與說明用截圖 |
@@ -107,7 +107,7 @@
 
 - **版本**：以 [`manifest.json`](manifest.json) 的 `version` 為準。
 - **預設語系**：`zh_TW`（`default_locale`）。
-- **內建語系**：`zh_TW`、`zh_CN`、`ja_JP`、`en_US`（路徑為 `_locales/<code>/messages.json`）。實際顯示依瀏覽器語系與遞減規則。
+- **內建語系**：`zh_TW`、`zh_CN`、`ja`、`en_US`（路徑為 `_locales/<code>/messages.json`）。實際顯示依瀏覽器語系與遞減規則。
 
 ---
 
