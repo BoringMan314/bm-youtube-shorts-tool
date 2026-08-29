@@ -95,6 +95,14 @@
     "message": "預設按住畫面的倍速",
     "description": "設定彈窗：按住畫面加速的預設倍率。"
   },
+  "popupAutoNextLabel": {
+    "message": "自動播放下個影片",
+    "description": "設定彈窗：啟用播完循環後自動切到下一支 Short。"
+  },
+  "popupLoopCountLabel": {
+    "message": "循環次數",
+    "description": "設定彈窗：同一支 Short 播放幾次後再切下一支（預設 2）。"
+  },
   "popupDefaultShortSpeedLabel": {
     "message": "預設短影片倍速",
     "description": "設定彈窗：一般播放的預設倍率。"

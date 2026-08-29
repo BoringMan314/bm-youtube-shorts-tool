@@ -5,6 +5,8 @@ const STORAGE_KEY_ARROW_VOLUME = 'bmYtsArrowVolumeEnabled';
 const STORAGE_KEY_PANEL_RIGHT = 'bmYtsPanelExpandRight';
 const STORAGE_KEY_DEFAULT_SPEED_INDEX = 'bmYts3xOptsDefaultSpeedIndex';
 const STORAGE_KEY_HOLD_SPEED_INDEX = 'bmYts3xOptsHoldSpeedIndex';
+const STORAGE_KEY_AUTO_NEXT = 'bmYtsToolboxAutoNextEnabled';
+const STORAGE_KEY_LOOP_COUNT = 'bmYtsToolboxPlayCountBeforeNext';
 
 function t(key) {
 	try {
@@ -19,6 +21,12 @@ function clampIndex(i) {
 	const n = Number(i);
 	if (!Number.isFinite(n)) return 0;
 	return Math.max(0, Math.min(SPEEDS.length - 1, Math.floor(n)));
+}
+
+function clampLoopCount(n) {
+	const v = Number(n);
+	if (!Number.isFinite(v)) return 2;
+	return Math.max(1, Math.min(999, Math.floor(v)));
 }
 
 function formatSpeedLabel(s) {
@@ -46,17 +54,21 @@ function init() {
 	applyI18n();
 	const toggleArrow = document.getElementById('toggleArrowVolume');
 	const togglePanelRight = document.getElementById('togglePanelExpandRight');
+	const toggleAutoNext = document.getElementById('toggleAutoNext');
 	const btnDef = document.getElementById('btnDefaultSpeed');
 	const btnHold = document.getElementById('btnHoldSpeed');
 	const lblDef = document.getElementById('lblDefaultSpeed');
 	const lblHold = document.getElementById('lblHoldSpeed');
+	const inputLoopCount = document.getElementById('inputLoopCount');
 	if (
 		!(toggleArrow instanceof HTMLInputElement) ||
 		!(togglePanelRight instanceof HTMLInputElement) ||
+		!(toggleAutoNext instanceof HTMLInputElement) ||
 		!(btnDef instanceof HTMLButtonElement) ||
 		!(btnHold instanceof HTMLButtonElement) ||
 		!(lblDef instanceof HTMLElement) ||
-		!(lblHold instanceof HTMLElement)
+		!(lblHold instanceof HTMLElement) ||
+		!(inputLoopCount instanceof HTMLInputElement)
 	)
 		return;
 
@@ -70,20 +82,35 @@ function init() {
 		btnHold.setAttribute('aria-label', t('popupAriaHoldSpeedCycle'));
 	}
 
+	function syncLoopCountEnabled() {
+		inputLoopCount.disabled = !toggleAutoNext.checked;
+	}
+
+	function persistLoopCount() {
+		const n = clampLoopCount(inputLoopCount.value);
+		inputLoopCount.value = String(n);
+		chrome.storage.local.set({ [STORAGE_KEY_LOOP_COUNT]: n });
+	}
+
 	chrome.storage.local.get(
 		{
 			[STORAGE_KEY_ARROW_VOLUME]: true,
 			[STORAGE_KEY_PANEL_RIGHT]: true,
 			[STORAGE_KEY_DEFAULT_SPEED_INDEX]: 0,
 			[STORAGE_KEY_HOLD_SPEED_INDEX]: 2,
+			[STORAGE_KEY_AUTO_NEXT]: false,
+			[STORAGE_KEY_LOOP_COUNT]: 2,
 		},
 		(res) => {
 			if (chrome.runtime.lastError) return;
 			toggleArrow.checked = res[STORAGE_KEY_ARROW_VOLUME] !== false;
 			togglePanelRight.checked = res[STORAGE_KEY_PANEL_RIGHT] !== false;
+			toggleAutoNext.checked = res[STORAGE_KEY_AUTO_NEXT] === true;
 			defaultIdx = clampIndex(res[STORAGE_KEY_DEFAULT_SPEED_INDEX]);
 			holdIdx = clampIndex(res[STORAGE_KEY_HOLD_SPEED_INDEX]);
+			inputLoopCount.value = String(clampLoopCount(res[STORAGE_KEY_LOOP_COUNT]));
 			syncSpeedLabels();
+			syncLoopCountEnabled();
 		}
 	);
 
@@ -92,6 +119,10 @@ function init() {
 	});
 	togglePanelRight.addEventListener('change', () => {
 		chrome.storage.local.set({ [STORAGE_KEY_PANEL_RIGHT]: togglePanelRight.checked });
+	});
+	toggleAutoNext.addEventListener('change', () => {
+		chrome.storage.local.set({ [STORAGE_KEY_AUTO_NEXT]: toggleAutoNext.checked });
+		syncLoopCountEnabled();
 	});
 	btnDef.addEventListener('click', () => {
 		defaultIdx = (defaultIdx + 1) % SPEEDS.length;
@@ -107,6 +138,8 @@ function init() {
 			[STORAGE_KEY_HOLD_SPEED_INDEX]: holdIdx,
 		});
 	});
+	inputLoopCount.addEventListener('change', persistLoopCount);
+	inputLoopCount.addEventListener('blur', persistLoopCount);
 }
 
 document.addEventListener('DOMContentLoaded', init);

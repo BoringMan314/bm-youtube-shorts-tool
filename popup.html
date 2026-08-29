@@ -115,6 +115,27 @@
         outline: 2px solid #1a73e8;
         outline-offset: 2px;
       }
+      .bm-number {
+        box-sizing: border-box;
+        flex-shrink: 0;
+        width: 64px;
+        height: 32px;
+        padding: 0 8px;
+        margin: 0;
+        border: 1px solid #dadce0;
+        border-radius: 8px;
+        font-family: inherit;
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1;
+        text-align: center;
+        color: #1a1a1a;
+        background: #fff;
+      }
+      .bm-number:focus-visible {
+        outline: 2px solid #1a73e8;
+        outline-offset: 2px;
+      }
     </style>
   </head>
   <body>
@@ -130,6 +151,26 @@
       <button type="button" id="btnHoldSpeed" class="bm-cycle">
         <span id="lblHoldSpeed">2×</span>
       </button>
+    </div>
+    <div class="row">
+      <span class="label" data-i18n="popupAutoNextLabel"></span>
+      <label class="switch" data-i18n-aria-label="popupAutoNextLabel">
+        <input id="toggleAutoNext" type="checkbox" />
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="row">
+      <span class="label" data-i18n="popupLoopCountLabel"></span>
+      <input
+        id="inputLoopCount"
+        class="bm-number"
+        type="number"
+        min="1"
+        max="999"
+        step="1"
+        value="2"
+        inputmode="numeric"
+      />
     </div>
     <div class="row">
       <span class="label" data-i18n="popupArrowVolumeLabel"></span>

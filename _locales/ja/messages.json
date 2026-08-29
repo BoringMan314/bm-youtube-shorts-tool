@@ -95,6 +95,14 @@
     "message": "長押し時の既定倍速",
     "description": "ポップアップ：画面を長押ししたときの既定倍率。"
   },
+  "popupAutoNextLabel": {
+    "message": "次の動画を自動再生",
+    "description": "ポップアップ：ループ回数後に次の Short へ進むか。"
+  },
+  "popupLoopCountLabel": {
+    "message": "ループ回数",
+    "description": "ポップアップ：同じ Short を何回再生したら次へ進むか（既定 2）。"
+  },
   "popupDefaultShortSpeedLabel": {
     "message": "ショートの既定倍速",
     "description": "ポップアップ：通常再生の既定倍率。"

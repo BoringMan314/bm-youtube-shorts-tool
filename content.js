@@ -11,6 +11,8 @@
 	const PANEL_EXPAND_RIGHT_STORAGE_KEY = 'bmYtsPanelExpandRight';
 	const STORAGE_KEY_DEFAULT_SPEED_INDEX = 'bmYts3xOptsDefaultSpeedIndex';
 	const STORAGE_KEY_HOLD_SPEED_INDEX = 'bmYts3xOptsHoldSpeedIndex';
+	const STORAGE_KEY_AUTO_NEXT = 'bmYtsToolboxAutoNextEnabled';
+	const STORAGE_KEY_PLAY_COUNT_BEFORE_NEXT = 'bmYtsToolboxPlayCountBeforeNext';
 	const w = window;
 	try {
 		if (w[INSTANCE_KEY] && typeof w[INSTANCE_KEY].destroy === 'function') {
@@ -30,6 +32,12 @@
 	let holdActive = false;
 	let holdPointerId = null;
 	let holdSpeedIndex = 2;
+	let autoNextEnabled = false;
+	let playCountBeforeNext = 2;
+	let playThroughCount = 0;
+	let playThroughShortId = '';
+	let lastPlayCompletionAt = 0;
+	let lastAdvanceToNextAt = 0;
 
 	function readSessionIndex() {
 		try {
@@ -47,6 +55,12 @@
 		const n = Number(i);
 		if (!Number.isFinite(n)) return 0;
 		return Math.max(0, Math.min(SPEEDS.length - 1, Math.floor(n)));
+	}
+
+	function clampPlayCount(n) {
+		const v = Number(n);
+		if (!Number.isFinite(v)) return 2;
+		return Math.max(1, Math.min(999, Math.floor(v)));
 	}
 
 	function persistSpeedIndex() {
@@ -70,6 +84,7 @@
 	let lastAnchorFixAt = 0;
 	let lastOverlayNeutralizeAt = 0;
 	let mainTickInterval = null;
+	let commentsLiftSlotEl = null;
 	let speedRootEl = null;
 	let remixRowEl = null;
 	let remixButtonEl = null;
@@ -104,12 +119,16 @@
 					[PANEL_EXPAND_RIGHT_STORAGE_KEY]: true,
 					[STORAGE_KEY_DEFAULT_SPEED_INDEX]: 0,
 					[STORAGE_KEY_HOLD_SPEED_INDEX]: 2,
+					[STORAGE_KEY_AUTO_NEXT]: false,
+					[STORAGE_KEY_PLAY_COUNT_BEFORE_NEXT]: 2,
 				},
 				(res) => {
 					if (chrome.runtime.lastError) return;
 					leftRightVolumeEnabled = res[VOLUME_HOTKEY_STORAGE_KEY] !== false;
 					panelExpandRightEnabled = res[PANEL_EXPAND_RIGHT_STORAGE_KEY] !== false;
 					holdSpeedIndex = clampSpeedIndex(res[STORAGE_KEY_HOLD_SPEED_INDEX]);
+					autoNextEnabled = res[STORAGE_KEY_AUTO_NEXT] === true;
+					playCountBeforeNext = clampPlayCount(res[STORAGE_KEY_PLAY_COUNT_BEFORE_NEXT]);
 					const sess = readSessionIndex();
 					if (sess !== null) {
 						currentIndex = sess;
@@ -150,6 +169,16 @@
 				if (changes[STORAGE_KEY_HOLD_SPEED_INDEX]) {
 					holdSpeedIndex = clampSpeedIndex(changes[STORAGE_KEY_HOLD_SPEED_INDEX].newValue);
 					if (holdActive) applyToAllLikelyVideos();
+				}
+				if (changes[STORAGE_KEY_AUTO_NEXT]) {
+					autoNextEnabled = changes[STORAGE_KEY_AUTO_NEXT].newValue === true;
+					if (!autoNextEnabled) {
+						playThroughCount = 0;
+						lastPlayCompletionAt = 0;
+					}
+				}
+				if (changes[STORAGE_KEY_PLAY_COUNT_BEFORE_NEXT]) {
+					playCountBeforeNext = clampPlayCount(changes[STORAGE_KEY_PLAY_COUNT_BEFORE_NEXT].newValue);
 				}
 				if (changes[STORAGE_KEY_DEFAULT_SPEED_INDEX]) {
 					currentIndex = clampSpeedIndex(changes[STORAGE_KEY_DEFAULT_SPEED_INDEX].newValue);
@@ -316,6 +345,10 @@
 		if (!(root instanceof HTMLElement) || !root.isConnected) return;
 		const likeRow = findFallbackAnchorRow();
 		if (!(likeRow instanceof HTMLElement) || !likeRow.parentElement) return;
+		const layoutHost = getToolboxLayoutHost();
+		const hostOverlay = getHostOverlay(layoutHost);
+		const likeOverlay = getHostOverlay(likeRow);
+		if (hostOverlay && likeOverlay && hostOverlay !== likeOverlay) return;
 
 		const likeBtn = findNativeLikeButtonForStyle();
 		if (likeBtn instanceof HTMLElement) {
@@ -356,6 +389,7 @@
 		const rootTop = root.getBoundingClientRect().top;
 		const rowBtnCenter = (row) => {
 			if (!(row instanceof HTMLElement)) return NaN;
+			if (hostOverlay && !hostOverlay.contains(row)) return NaN;
 			const btn = row.querySelector('button');
 			if (!(btn instanceof HTMLElement)) return NaN;
 			const r = btn.getBoundingClientRect();
@@ -377,9 +411,12 @@
 			if (!Number.isFinite(centerY)) return Math.round(fallbackPitch * fallbackMul);
 			return Math.max(0, Math.round(centerY - rootTop - btnSize / 2));
 		};
-		const speedTop = Number.isFinite(beforeLikeCenter)
-			? toTopByCenter(beforeLikeCenter, 0)
-			: Math.max(0, toTopByCenter(likeCenter, 1) - fallbackPitch);
+		const mainBtn = root.querySelector('.yts-tool-item-main .yts-speed-btn');
+		const mainTop =
+			mainBtn instanceof HTMLElement
+				? Math.max(0, Math.round(mainBtn.getBoundingClientRect().top - rootTop))
+				: 0;
+		const speedTop = mainTop;
 		const frameTop = toTopByCenter(likeCenter, 1);
 		const screenshotTop = toTopByCenter(dislikeCenter, 2);
 		const recordTop = toTopByCenter(commentCenter, 3);
@@ -852,6 +889,18 @@
 		);
 	}
 
+	function getHostOverlay(el) {
+		if (!(el instanceof Element)) return null;
+		return el.closest('ytd-reel-player-overlay-renderer');
+	}
+
+	function getToolboxLayoutHost() {
+		if (isToolboxLiftedAboveComments() && commentsLiftSlotEl && commentsLiftSlotEl.isConnected) {
+			return commentsLiftSlotEl;
+		}
+		return speedRootEl;
+	}
+
 	function getShortsReelUiScopeRoot() {
 		for (const overlay of getVisibleReelOverlays()) {
 			if (scopeHasActionBar(overlay)) return overlay;
@@ -1100,6 +1149,15 @@
 
 	function ensureSpeedAnchorIntact() {
 		if (!speedRootEl || !speedRootEl.isConnected) return;
+		const scope = getShortsReelUiScopeRoot();
+		if (isToolboxLiftedAboveComments()) {
+			const slotOverlay = getHostOverlay(commentsLiftSlotEl);
+			if (scope && slotOverlay && scope !== slotOverlay) {
+				restoreToolboxFromCommentsLift();
+			} else {
+				return;
+			}
+		}
 		if (!isInReelActionUi(speedRootEl)) {
 			mutatingDom = true;
 			try {
@@ -1115,8 +1173,17 @@
 		const likeRow = findFallbackAnchorRow();
 		if (!likeRow || !likeRow.parentElement) return;
 		const column = likeRow.parentElement;
-		if (speedRootEl.parentElement === column && speedRootEl.nextSibling === likeRow) return;
-		if (Date.now() - lastAnchorFixAt < 500) return;
+		const rootOverlay = getHostOverlay(speedRootEl);
+		const likeOverlay = getHostOverlay(likeRow);
+		const overlayMismatch = !!(rootOverlay && likeOverlay && rootOverlay !== likeOverlay);
+		if (
+			!overlayMismatch &&
+			speedRootEl.parentElement === column &&
+			speedRootEl.nextSibling === likeRow
+		) {
+			return;
+		}
+		if (!overlayMismatch && Date.now() - lastAnchorFixAt < 500) return;
 		lastAnchorFixAt = Date.now();
 		attachRootAtRow(speedRootEl, likeRow);
 	}
@@ -1185,17 +1252,27 @@
 	}
 
 	function isCommentsPanelOpen() {
-		const panel = document.querySelector(
+		const panels = document.querySelectorAll(
 			'ytd-engagement-panel-section-list-renderer, ytd-comments-panel'
 		);
-		if (!(panel instanceof HTMLElement)) return false;
-		if (panel.hasAttribute('hidden')) return false;
-		const cs = getComputedStyle(panel);
-		if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') {
-			return false;
+		for (const panel of panels) {
+			if (!(panel instanceof HTMLElement)) continue;
+			if (panel.hasAttribute('hidden')) continue;
+			const vis = panel.getAttribute('visibility');
+			if (vis && vis !== 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED') continue;
+			const cs = getComputedStyle(panel);
+			if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') continue;
+			const rect = panel.getBoundingClientRect();
+			if (rect.width < 80 || rect.height < 120) continue;
+			if (rect.right < 8 || rect.left > window.innerWidth - 8) continue;
+			if (rect.bottom < 8 || rect.top > window.innerHeight - 8) continue;
+			const hint = `${panel.getAttribute('target-id') || ''} ${panel.id || ''} ${
+				panel.getAttribute('panel-id') || ''
+			} ${panel.tagName}`;
+			if (!/comment/i.test(hint)) continue;
+			return true;
 		}
-		const rect = panel.getBoundingClientRect();
-		return rect.width > 0 && rect.height > 0;
+		return false;
 	}
 
 	function isCommentsText(s, allowClose = false) {
@@ -1271,6 +1348,104 @@
 			if (isCommentsText(label, allowClose)) return true;
 		}
 		return false;
+	}
+
+	function isToolboxLiftedAboveComments() {
+		return !!(speedRootEl && speedRootEl.dataset.ytsCommentsLift === '1');
+	}
+
+	function applyLiftedToolboxRect(rect) {
+		if (!(speedRootEl instanceof HTMLElement) || !rect) return;
+		speedRootEl.style.setProperty('position', 'fixed', 'important');
+		speedRootEl.style.setProperty('left', `${Math.round(rect.left)}px`, 'important');
+		speedRootEl.style.setProperty('top', `${Math.round(rect.top)}px`, 'important');
+		speedRootEl.style.setProperty('width', `${Math.round(rect.width)}px`, 'important');
+		speedRootEl.style.setProperty('z-index', '2147483647', 'important');
+		speedRootEl.style.setProperty('margin', '0', 'important');
+		speedRootEl.style.setProperty('pointer-events', 'auto', 'important');
+	}
+
+	function restoreToolboxFromCommentsLift() {
+		if (!isToolboxLiftedAboveComments()) {
+			if (commentsLiftSlotEl && commentsLiftSlotEl.isConnected) commentsLiftSlotEl.remove();
+			commentsLiftSlotEl = null;
+			return;
+		}
+		mutatingDom = true;
+		try {
+			if (commentsLiftSlotEl && commentsLiftSlotEl.isConnected && commentsLiftSlotEl.parentElement) {
+				commentsLiftSlotEl.parentElement.insertBefore(speedRootEl, commentsLiftSlotEl);
+				commentsLiftSlotEl.remove();
+			}
+		} finally {
+			mutatingDom = false;
+		}
+		commentsLiftSlotEl = null;
+		delete speedRootEl.dataset.ytsCommentsLift;
+		['position', 'left', 'top', 'width', 'margin', 'z-index', 'pointer-events'].forEach((prop) => {
+			speedRootEl.style.removeProperty(prop);
+		});
+	}
+
+	function raiseActionRailAboveComments() {
+		const overlay =
+			(speedRootEl && speedRootEl.closest('ytd-reel-player-overlay-renderer')) ||
+			document.querySelector('ytd-reel-player-overlay-renderer');
+		const actions =
+			(overlay instanceof Element && overlay.querySelector('#actions')) ||
+			document.querySelector('ytd-reel-player-overlay-renderer #actions');
+		if (!(actions instanceof HTMLElement)) return;
+		if (getComputedStyle(actions).position === 'static') {
+			actions.style.setProperty('position', 'relative', 'important');
+		}
+		actions.style.setProperty('z-index', '2147483647', 'important');
+		actions.style.setProperty('isolation', 'isolate', 'important');
+	}
+
+	function syncToolboxAboveComments() {
+		if (!speedRootEl || !speedRootEl.isConnected) return;
+		raiseActionRailAboveComments();
+		if (!isCommentsPanelOpen()) {
+			restoreToolboxFromCommentsLift();
+			return;
+		}
+
+		if (isToolboxLiftedAboveComments()) {
+			if (commentsLiftSlotEl && commentsLiftSlotEl.isConnected) {
+				const slotOverlay = getHostOverlay(commentsLiftSlotEl);
+				const scope = getShortsReelUiScopeRoot();
+				if (scope && slotOverlay && scope !== slotOverlay) {
+					restoreToolboxFromCommentsLift();
+					return;
+				}
+				applyLiftedToolboxRect(commentsLiftSlotEl.getBoundingClientRect());
+				return;
+			}
+			restoreToolboxFromCommentsLift();
+			return;
+		}
+
+		const parent = speedRootEl.parentElement;
+		if (!parent) return;
+		const rect = speedRootEl.getBoundingClientRect();
+		if (rect.width <= 0 || rect.height <= 0) return;
+
+		const slot = document.createElement('div');
+		slot.id = 'yts-toolbox-lift-slot';
+		slot.style.width = `${Math.round(rect.width)}px`;
+		slot.style.height = `${Math.round(rect.height)}px`;
+		slot.style.flexShrink = '0';
+		slot.style.pointerEvents = 'none';
+		mutatingDom = true;
+		try {
+			parent.insertBefore(slot, speedRootEl);
+			document.documentElement.appendChild(speedRootEl);
+		} finally {
+			mutatingDom = false;
+		}
+		commentsLiftSlotEl = slot;
+		speedRootEl.dataset.ytsCommentsLift = '1';
+		applyLiftedToolboxRect(rect);
 	}
 
 	function closeCommentsPanelIfOpen() {
@@ -1664,6 +1839,91 @@
 	function getCurrentShortId() {
 		const m = location.pathname.match(/\/shorts\/([^/?#]+)/);
 		return m ? m[1] : 'short';
+	}
+
+	function resetPlayThroughState(shortId) {
+		playThroughShortId = shortId || getCurrentShortId();
+		playThroughCount = 0;
+		lastPlayCompletionAt = 0;
+	}
+
+	function syncPlayThroughShortId() {
+		const id = getCurrentShortId();
+		if (id !== playThroughShortId) {
+			resetPlayThroughState(id);
+			restoreToolboxFromCommentsLift();
+			lastAnchorFixAt = 0;
+			ensureSpeedAnchorIntact();
+			syncToolboxLayoutWithNative();
+		}
+	}
+
+	function goToNextShort() {
+		const now = Date.now();
+		if (now - lastAdvanceToNextAt < 900) return;
+		lastAdvanceToNextAt = now;
+		restoreToolboxFromCommentsLift();
+		lastAnchorFixAt = 0;
+
+		const btn =
+			document.querySelector('#navigation-button-down button') ||
+			document.querySelector('ytd-button-renderer#navigation-button-down button') ||
+			querySelectorDeep('#navigation-button-down button');
+		if (btn instanceof HTMLElement) {
+			try {
+				btn.click();
+				return;
+			} catch (_) {}
+		}
+
+		const evtInit = {
+			key: 'ArrowDown',
+			code: 'ArrowDown',
+			keyCode: 40,
+			which: 40,
+			bubbles: true,
+			cancelable: true,
+		};
+		const targets = [
+			document.activeElement,
+			querySelectorDeep('#shorts-player'),
+			querySelectorDeep('#movie_player'),
+			document.body,
+			document.documentElement,
+		].filter((el) => el && typeof el.dispatchEvent === 'function');
+		for (const target of targets) {
+			try {
+				target.dispatchEvent(new KeyboardEvent('keydown', evtInit));
+				target.dispatchEvent(new KeyboardEvent('keyup', evtInit));
+			} catch (_) {}
+		}
+	}
+
+	function onShortPlayCompleted() {
+		if (!autoNextEnabled) return;
+		if (framePlaybackEnabled || recordingSession || manualRecordSession || suspendSpeedSync) return;
+		syncPlayThroughShortId();
+		const now = Date.now();
+		if (now - lastPlayCompletionAt < 500) return;
+		lastPlayCompletionAt = now;
+		playThroughCount += 1;
+		if (playThroughCount < playCountBeforeNext) return;
+		playThroughCount = 0;
+		goToNextShort();
+	}
+
+	function onHookedVideoTimeUpdate(v) {
+		if (!(v instanceof HTMLVideoElement)) return;
+		const active = getActiveShortsVideo();
+		if (active && active !== v) return;
+		const dur = Number(v.duration);
+		if (!Number.isFinite(dur) || dur < 0.4) return;
+		const t = Number(v.currentTime) || 0;
+		const prev = Number(v.dataset.bmPrevPlayTime || 0);
+		if (prev > dur * 0.82 && t < Math.min(1.25, dur * 0.22)) {
+			onShortPlayCompleted();
+		}
+		v.dataset.bmPrevPlayTime = String(t);
 	}
 
 	function getActiveShortsRenderer() {
@@ -2700,6 +2960,12 @@
 		});
 		v.addEventListener('loadedmetadata', scheduleReapply);
 		v.addEventListener('playing', scheduleReapply);
+		v.addEventListener('timeupdate', () => onHookedVideoTimeUpdate(v));
+		v.addEventListener('ended', () => {
+			const active = getActiveShortsVideo();
+			if (active && active !== v) return;
+			onShortPlayCompleted();
+		});
 	}
 
 	function hookAllVideosUnder(root) {
@@ -2942,6 +3208,7 @@
 		downloadPercentEl = null;
 		recordBtnEl = null;
 		stopManualRecording();
+		restoreToolboxFromCommentsLift();
 		if (recordingSession && recordingSession.progressTimerId) {
 			clearInterval(recordingSession.progressTimerId);
 		}
@@ -2969,6 +3236,7 @@
 
 	function tick() {
 		runMountWork();
+		syncPlayThroughShortId();
 		if (!(speedRootEl && speedRootEl.isConnected)) return;
 		if (recordingSession) {
 			if (recordingSession.shortId === getCurrentShortId()) {
@@ -2986,6 +3254,7 @@
 		maybeNeutralizeBlockingOverlays();
 		syncToolboxLayoutWithNative();
 		syncSpeedUiWithNativeLike();
+		syncToolboxAboveComments();
 	}
 
 	if (document.readyState === 'loading') {

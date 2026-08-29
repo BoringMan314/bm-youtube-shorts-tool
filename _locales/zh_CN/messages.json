@@ -95,6 +95,14 @@
     "message": "预设按住画面的倍速",
     "description": "设置弹窗：按住画面加速的默认倍率。"
   },
+  "popupAutoNextLabel": {
+    "message": "自动播放下个视频",
+    "description": "设置弹窗：启用播完循环后自动切到下一支 Short。"
+  },
+  "popupLoopCountLabel": {
+    "message": "循环次数",
+    "description": "设置弹窗：同一支 Short 播放几次后再切下一支（默认 2）。"
+  },
   "popupDefaultShortSpeedLabel": {
     "message": "预设短视频倍速",
     "description": "设置弹窗：一般播放的默认倍率。"

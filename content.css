@@ -264,6 +264,12 @@
   max-height: 100%;
 }
 
+ytd-reel-player-overlay-renderer #actions {
+  position: relative;
+  z-index: 2147483647 !important;
+  isolation: isolate;
+}
+
 #shorts-player ytd-reel-video-renderer,
 #shorts-player ytd-reel-video-renderer #player-container,
 #shorts-player ytd-reel-video-renderer .html5-video-container {
