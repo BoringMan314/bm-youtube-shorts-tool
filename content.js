@@ -38,6 +38,7 @@
 	let playThroughShortId = '';
 	let lastPlayCompletionAt = 0;
 	let lastAdvanceToNextAt = 0;
+	let autoAdvancePendingUntil = 0;
 
 	function readSessionIndex() {
 		try {
@@ -895,9 +896,6 @@
 	}
 
 	function getToolboxLayoutHost() {
-		if (isToolboxLiftedAboveComments() && commentsLiftSlotEl && commentsLiftSlotEl.isConnected) {
-			return commentsLiftSlotEl;
-		}
 		return speedRootEl;
 	}
 
@@ -1149,25 +1147,9 @@
 
 	function ensureSpeedAnchorIntact() {
 		if (!speedRootEl || !speedRootEl.isConnected) return;
-		const scope = getShortsReelUiScopeRoot();
-		if (isToolboxLiftedAboveComments()) {
-			const slotOverlay = getHostOverlay(commentsLiftSlotEl);
-			if (scope && slotOverlay && scope !== slotOverlay) {
-				restoreToolboxFromCommentsLift();
-			} else {
-				return;
-			}
-		}
+		if (isToolboxLiftedAboveComments()) return;
 		if (!isInReelActionUi(speedRootEl)) {
-			mutatingDom = true;
-			try {
-				speedRootEl.remove();
-			} finally {
-				mutatingDom = false;
-			}
-			speedRootEl = null;
-			remixRowEl = null;
-			remixButtonEl = null;
+			remountToolboxToCurrentShort();
 			return;
 		}
 		const likeRow = findFallbackAnchorRow();
@@ -1365,85 +1347,84 @@
 		speedRootEl.style.setProperty('pointer-events', 'auto', 'important');
 	}
 
-	function restoreToolboxFromCommentsLift() {
-		if (!isToolboxLiftedAboveComments()) {
-			if (commentsLiftSlotEl && commentsLiftSlotEl.isConnected) commentsLiftSlotEl.remove();
-			commentsLiftSlotEl = null;
-			return;
-		}
-		mutatingDom = true;
-		try {
-			if (commentsLiftSlotEl && commentsLiftSlotEl.isConnected && commentsLiftSlotEl.parentElement) {
-				commentsLiftSlotEl.parentElement.insertBefore(speedRootEl, commentsLiftSlotEl);
-				commentsLiftSlotEl.remove();
-			}
-		} finally {
-			mutatingDom = false;
-		}
-		commentsLiftSlotEl = null;
+	function clearToolboxLiftStyles() {
+		if (!(speedRootEl instanceof HTMLElement)) return;
 		delete speedRootEl.dataset.ytsCommentsLift;
 		['position', 'left', 'top', 'width', 'margin', 'z-index', 'pointer-events'].forEach((prop) => {
 			speedRootEl.style.removeProperty(prop);
 		});
 	}
 
-	function raiseActionRailAboveComments() {
-		const overlay =
-			(speedRootEl && speedRootEl.closest('ytd-reel-player-overlay-renderer')) ||
-			document.querySelector('ytd-reel-player-overlay-renderer');
-		const actions =
-			(overlay instanceof Element && overlay.querySelector('#actions')) ||
-			document.querySelector('ytd-reel-player-overlay-renderer #actions');
-		if (!(actions instanceof HTMLElement)) return;
-		if (getComputedStyle(actions).position === 'static') {
-			actions.style.setProperty('position', 'relative', 'important');
+	function clearRaisedActionRailStyles() {
+		document.querySelectorAll('ytd-reel-player-overlay-renderer #actions').forEach((el) => {
+			if (!(el instanceof HTMLElement)) return;
+			el.style.removeProperty('position');
+			el.style.removeProperty('z-index');
+			el.style.removeProperty('isolation');
+			delete el.dataset.ytsActionsRaised;
+		});
+	}
+
+	function cleanupOrphanLiftSlots() {
+		document.querySelectorAll('#yts-toolbox-lift-slot').forEach((el) => {
+			if (el instanceof HTMLElement) el.remove();
+		});
+		commentsLiftSlotEl = null;
+	}
+
+	function remountToolboxToCurrentShort() {
+		cleanupOrphanLiftSlots();
+		clearToolboxLiftStyles();
+		clearRaisedActionRailStyles();
+		const likeRow = findFallbackAnchorRow();
+		if (speedRootEl && speedRootEl.isConnected && likeRow && likeRow.parentElement) {
+			lastAnchorFixAt = 0;
+			attachRootAtRow(speedRootEl, likeRow);
+			syncToolboxLayoutWithNative();
+			return true;
 		}
-		actions.style.setProperty('z-index', '2147483647', 'important');
-		actions.style.setProperty('isolation', 'isolate', 'important');
+		if (speedRootEl && speedRootEl.isConnected && !isInReelActionUi(speedRootEl)) {
+			mutatingDom = true;
+			try {
+				speedRootEl.remove();
+			} finally {
+				mutatingDom = false;
+			}
+			speedRootEl = null;
+		}
+		return !!(speedRootEl && speedRootEl.isConnected);
+	}
+
+	function restoreToolboxFromCommentsLift() {
+		cleanupOrphanLiftSlots();
+		clearRaisedActionRailStyles();
+		if (!isToolboxLiftedAboveComments()) return;
+		clearToolboxLiftStyles();
+		if (!speedRootEl || !isInReelActionUi(speedRootEl)) {
+			remountToolboxToCurrentShort();
+		} else {
+			syncToolboxLayoutWithNative();
+		}
+	}
+
+	function raiseActionRailAboveComments() {
+		return;
 	}
 
 	function syncToolboxAboveComments() {
 		if (!speedRootEl || !speedRootEl.isConnected) return;
-		raiseActionRailAboveComments();
 		if (!isCommentsPanelOpen()) {
 			restoreToolboxFromCommentsLift();
 			return;
 		}
 
-		if (isToolboxLiftedAboveComments()) {
-			if (commentsLiftSlotEl && commentsLiftSlotEl.isConnected) {
-				const slotOverlay = getHostOverlay(commentsLiftSlotEl);
-				const scope = getShortsReelUiScopeRoot();
-				if (scope && slotOverlay && scope !== slotOverlay) {
-					restoreToolboxFromCommentsLift();
-					return;
-				}
-				applyLiftedToolboxRect(commentsLiftSlotEl.getBoundingClientRect());
-				return;
-			}
-			restoreToolboxFromCommentsLift();
-			return;
+		// 只做 fixed 浮層，不搬 DOM、不插占位，避免弄壞右側原生按鈕圖示
+		if (!isInReelActionUi(speedRootEl)) {
+			remountToolboxToCurrentShort();
+			if (!speedRootEl || !speedRootEl.isConnected) return;
 		}
-
-		const parent = speedRootEl.parentElement;
-		if (!parent) return;
 		const rect = speedRootEl.getBoundingClientRect();
 		if (rect.width <= 0 || rect.height <= 0) return;
-
-		const slot = document.createElement('div');
-		slot.id = 'yts-toolbox-lift-slot';
-		slot.style.width = `${Math.round(rect.width)}px`;
-		slot.style.height = `${Math.round(rect.height)}px`;
-		slot.style.flexShrink = '0';
-		slot.style.pointerEvents = 'none';
-		mutatingDom = true;
-		try {
-			parent.insertBefore(slot, speedRootEl);
-			document.documentElement.appendChild(speedRootEl);
-		} finally {
-			mutatingDom = false;
-		}
-		commentsLiftSlotEl = slot;
 		speedRootEl.dataset.ytsCommentsLift = '1';
 		applyLiftedToolboxRect(rect);
 	}
@@ -1462,7 +1443,119 @@
 		}
 	}
 
-	function onDocumentClick(e) {}
+	let commentTranslateMode = null;
+	let syncingCommentTranslations = false;
+	let commentTranslateObserver = null;
+	let commentTranslateSyncTimer = null;
+
+	function getCommentTranslateHostFromNode(node) {
+		if (!(node instanceof Element)) return null;
+		if (
+			node.matches &&
+			node.matches('ytd-tri-state-button-view-model.translate-button, .translate-button')
+		) {
+			return node;
+		}
+		return node.closest
+			? node.closest('ytd-tri-state-button-view-model.translate-button, .translate-button')
+			: null;
+	}
+
+	function getCommentTranslateHostFromEvent(e) {
+		if (!e) return null;
+		if (typeof e.composedPath === 'function') {
+			for (const node of e.composedPath()) {
+				const host = getCommentTranslateHostFromNode(node);
+				if (host) return host;
+			}
+		}
+		return getCommentTranslateHostFromNode(e.target instanceof Element ? e.target : null);
+	}
+
+	function getCommentTranslateButton(host) {
+		if (!(host instanceof Element)) return null;
+		const btn =
+			host.querySelector('tp-yt-paper-button, button, [role="button"]') || host;
+		return btn instanceof HTMLElement ? btn : null;
+	}
+
+	function isCommentTranslateOn(host) {
+		if (!(host instanceof Element)) return false;
+		const state = (host.getAttribute('state') || '').toLowerCase();
+		if (state === 'toggled') return true;
+		if (state === 'untoggled') return false;
+		const label =
+			(getCommentTranslateButton(host)?.textContent || host.textContent || '').trim();
+		if (/(原文|original|オリジナル|原文を表示|顯示原文|显示原文)/i.test(label)) return true;
+		if (/(翻譯|翻译|Translate|翻訳)/i.test(label)) return false;
+		return false;
+	}
+
+	function collectCommentTranslateHosts(root = document.documentElement) {
+		return querySelectorAllDeep(
+			'ytd-tri-state-button-view-model.translate-button, ytd-tri-state-button-view-model.translate-button-view-model, .translate-button',
+			root
+		).filter((el) => el instanceof HTMLElement);
+	}
+
+	function syncAllCommentTranslations(mode, exceptHost = null) {
+		if (!mode) return;
+		if (syncingCommentTranslations) return;
+		syncingCommentTranslations = true;
+		try {
+			const wantOn = mode === 'on';
+			const hosts = collectCommentTranslateHosts();
+			for (const host of hosts) {
+				if (exceptHost && (host === exceptHost || host.contains(exceptHost) || exceptHost.contains(host))) {
+					continue;
+				}
+				if (isCommentTranslateOn(host) === wantOn) continue;
+				const btn = getCommentTranslateButton(host);
+				if (!btn) continue;
+				try {
+					btn.click();
+				} catch (_) {}
+			}
+		} finally {
+			setTimeout(() => {
+				syncingCommentTranslations = false;
+			}, 50);
+		}
+	}
+
+	function scheduleCommentTranslateSync() {
+		if (!commentTranslateMode) return;
+		if (commentTranslateSyncTimer) clearTimeout(commentTranslateSyncTimer);
+		commentTranslateSyncTimer = setTimeout(() => {
+			commentTranslateSyncTimer = null;
+			syncAllCommentTranslations(commentTranslateMode);
+		}, 120);
+	}
+
+	function ensureCommentTranslateObserver() {
+		if (commentTranslateObserver) return;
+		const root = document.documentElement || document.body;
+		if (!root) return;
+		commentTranslateObserver = new MutationObserver(() => {
+			if (!commentTranslateMode) return;
+			scheduleCommentTranslateSync();
+		});
+		commentTranslateObserver.observe(root, { childList: true, subtree: true });
+	}
+
+	function onDocumentClick(e) {
+		if (syncingCommentTranslations) return;
+		const host = getCommentTranslateHostFromEvent(e);
+		if (!host) return;
+		const currentlyOn = isCommentTranslateOn(host);
+		const nextMode = currentlyOn ? 'off' : 'on';
+		commentTranslateMode = nextMode;
+		ensureCommentTranslateObserver();
+		setTimeout(() => {
+			syncAllCommentTranslations(nextMode, host);
+			scheduleCommentTranslateSync();
+		}, 30);
+	}
 
 	function getNativeYouTubePlayerApi(videoEl = null) {
 		if (videoEl instanceof HTMLVideoElement) {
@@ -1694,6 +1787,9 @@
 	function onDocumentKeydown(e) {
 		if (!(e instanceof KeyboardEvent)) return;
 		const k = e.key;
+		if (k === 'ArrowUp' || k === 'ArrowDown') {
+			noteManualShortNavigation();
+		}
 		if (leftRightVolumeEnabled && (k === 'ArrowLeft' || k === 'ArrowRight')) {
 			const delta = k === 'ArrowRight' ? 0.05 : -0.05;
 			if (!adjustVolumeBy(delta)) return;
@@ -1706,6 +1802,31 @@
 		}
 	}
 
+	function onManualShortNavGesture(e) {
+		if (!e) return;
+		if (e.type === 'wheel') {
+			if (Math.abs(e.deltaY || 0) < 8) return;
+			noteManualShortNavigation();
+			return;
+		}
+		if (e.type === 'pointerdown' || e.type === 'touchstart') {
+			const t = e.target;
+			if (!(t instanceof Element)) return;
+			if (t.closest(`#${ROOT_ID}`)) return;
+			if (t.closest('#navigation-button-down, #navigation-button-up')) {
+				noteManualShortNavigation();
+			}
+		}
+	}
+
+	function onShortNavigateFinish() {
+		startBootstrapRetries();
+		if (!isAutoAdvanceNavigation()) {
+			noteManualShortNavigation();
+		}
+		syncPlayThroughShortId();
+	}
+
 	function togglePanel() {
 		if (!speedRootEl) return;
 		const nextOpen = speedRootEl.dataset.open === '1' ? '0' : '1';
@@ -1715,6 +1836,8 @@
 
 	document.addEventListener('click', onDocumentClick, true);
 	document.addEventListener('keydown', onDocumentKeydown, true);
+	document.addEventListener('wheel', onManualShortNavGesture, { capture: true, passive: true });
+	document.addEventListener('pointerdown', onManualShortNavGesture, true);
 	runtimeMsgHandler = (msg) => {
 		if (!msg || !msg.type) return;
 		if (msg.type === 'BM_BG_RECORD_DONE') {
@@ -1841,28 +1964,72 @@
 		return m ? m[1] : 'short';
 	}
 
+	function getActiveShortKey() {
+		const id = getCurrentShortId();
+		const v = getActiveShortsVideo();
+		const renderer =
+			(v instanceof HTMLVideoElement && v.closest('ytd-reel-video-renderer')) ||
+			document.querySelector('ytd-reel-video-renderer[is-active]') ||
+			document.querySelector('ytd-reel-video-renderer[reel-active]');
+		const rid =
+			renderer instanceof HTMLElement
+				? renderer.getAttribute('id') ||
+					renderer.getAttribute('reel-video-id') ||
+					renderer.dataset.videoId ||
+					''
+				: '';
+		const src = v instanceof HTMLVideoElement ? v.currentSrc || v.src || '' : '';
+		return `${id}|${rid}|${src}`;
+	}
+
+	function clearActiveVideoPlayCursor() {
+		const v = getActiveShortsVideo();
+		if (v instanceof HTMLVideoElement) {
+			delete v.dataset.bmPrevPlayTime;
+		}
+	}
+
 	function resetPlayThroughState(shortId) {
-		playThroughShortId = shortId || getCurrentShortId();
+		playThroughShortId = shortId || getActiveShortKey();
 		playThroughCount = 0;
 		lastPlayCompletionAt = 0;
+		clearActiveVideoPlayCursor();
+	}
+
+	function isAutoAdvanceNavigation() {
+		return Date.now() < autoAdvancePendingUntil || Date.now() - lastAdvanceToNextAt < 1200;
+	}
+
+	function noteManualShortNavigation() {
+		if (isAutoAdvanceNavigation()) return;
+		playThroughCount = 0;
+		lastPlayCompletionAt = 0;
+		clearActiveVideoPlayCursor();
+		const id = getActiveShortKey();
+		if (id !== playThroughShortId) {
+			playThroughShortId = id;
+			remountToolboxToCurrentShort();
+		}
 	}
 
 	function syncPlayThroughShortId() {
-		const id = getCurrentShortId();
-		if (id !== playThroughShortId) {
-			resetPlayThroughState(id);
-			restoreToolboxFromCommentsLift();
-			lastAnchorFixAt = 0;
-			ensureSpeedAnchorIntact();
-			syncToolboxLayoutWithNative();
+		const id = getActiveShortKey();
+		if (id === playThroughShortId) return;
+		const wasAuto = isAutoAdvanceNavigation();
+		resetPlayThroughState(id);
+		if (!wasAuto) {
+			playThroughCount = 0;
+			lastPlayCompletionAt = 0;
 		}
+		remountToolboxToCurrentShort();
 	}
 
 	function goToNextShort() {
 		const now = Date.now();
 		if (now - lastAdvanceToNextAt < 900) return;
 		lastAdvanceToNextAt = now;
-		restoreToolboxFromCommentsLift();
+		autoAdvancePendingUntil = now + 1600;
+		remountToolboxToCurrentShort();
 		lastAnchorFixAt = 0;
 
 		const btn =
@@ -3190,12 +3357,23 @@
 		}
 		document.removeEventListener('click', onDocumentClick, true);
 		document.removeEventListener('keydown', onDocumentKeydown, true);
+		document.removeEventListener('wheel', onManualShortNavGesture, true);
+		document.removeEventListener('pointerdown', onManualShortNavGesture, true);
+		if (commentTranslateObserver) {
+			commentTranslateObserver.disconnect();
+			commentTranslateObserver = null;
+		}
+		if (commentTranslateSyncTimer) {
+			clearTimeout(commentTranslateSyncTimer);
+			commentTranslateSyncTimer = null;
+		}
+		commentTranslateMode = null;
 		if (runtimeMsgHandler) {
 			chrome.runtime.onMessage.removeListener(runtimeMsgHandler);
 			runtimeMsgHandler = null;
 		}
 		window.removeEventListener('pageshow', startBootstrapRetries);
-		window.removeEventListener('yt-navigate-finish', startBootstrapRetries);
+		window.removeEventListener('yt-navigate-finish', onShortNavigateFinish);
 		if (speedRootEl && speedRootEl.isConnected) {
 			speedRootEl.remove();
 		}
@@ -3291,7 +3469,7 @@
 	});
 	initObservers();
 	window.addEventListener('pageshow', startBootstrapRetries);
-	window.addEventListener('yt-navigate-finish', startBootstrapRetries);
+	window.addEventListener('yt-navigate-finish', onShortNavigateFinish);
 	mainTickInterval = setInterval(tick, 2000);
 	w[INSTANCE_KEY] = { destroy: destroyInstance };
 })();
