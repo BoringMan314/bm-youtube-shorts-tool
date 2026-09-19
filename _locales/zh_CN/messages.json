@@ -72,7 +72,7 @@
     "description": "扩展功能名称（简体中文）"
   },
   "popupArrowVolumeLabel": {
-    "message": "左右键控制音量",
+    "message": "左右键控制音量（每次 5%）",
     "description": "弹出窗口中左右键音量控制开关标签。"
   },
   "popupPanelExpandRightLabel": {

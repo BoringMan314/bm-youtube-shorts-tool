@@ -2,10 +2,18 @@
 	'use strict';
 
 	const SPEEDS = [1, 1.5, 2, 3];
+	const VOLUME_STEP_PERCENT = 5;
 	const ROOT_ID = 'yts-speed-root';
+	const TOOLBOX_TOP_Z = '2147483646';
 	const INSTANCE_KEY = '__bmYtsToolboxInstance__';
 	const VIDEO_HOOK_KEY = 'bmYtsToolboxHooked';
 	const CONTROLLER_ATTR = 'data-bm-yts-controller';
+	const TOOLBOX_ROLE = 'toolbox';
+	const SPEED3X_ROLE = 'speed';
+	const COMMENTS_OPEN_ATTR = 'data-bm-yts-comments-open';
+	const RESIZE_LOCK_ATTR = 'data-bm-yts-resize-lock';
+	const WINDOW_RESIZE_HOLD_MS = 2000;
+	const EXPLICIT_NAV_MS = 2000;
 	const SPEED_STORAGE_KEY = 'bmYtsToolboxSpeed';
 	const VOLUME_HOTKEY_STORAGE_KEY = 'bmYtsArrowVolumeEnabled';
 	const PANEL_EXPAND_RIGHT_STORAGE_KEY = 'bmYtsPanelExpandRight';
@@ -13,6 +21,40 @@
 	const STORAGE_KEY_HOLD_SPEED_INDEX = 'bmYts3xOptsHoldSpeedIndex';
 	const STORAGE_KEY_AUTO_NEXT = 'bmYtsToolboxAutoNextEnabled';
 	const STORAGE_KEY_PLAY_COUNT_BEFORE_NEXT = 'bmYtsToolboxPlayCountBeforeNext';
+	const FALLBACK_MESSAGES = {
+		zhTW: {
+			ariaDownload: '下載', ariaFrameStep: '逐幀播放', ariaPlaybackSpeed: '播放速度',
+			ariaRecord: '錄製', ariaScreenshot: '截圖', ariaToolbox: '工具箱',
+			captionDownload: '下載', captionFrameStep: '逐幀', captionRecord: '錄製',
+			captionScreenshot: '截圖', captionSpeed: '速度', captionToolbox: '工具箱',
+			downloadFailed: '下載啟動失敗。', screenshotFailed: '截圖失敗。',
+			screenshotNoVideoSource: '目前抓不到可截圖的影片來源。',
+		},
+		zhCN: {
+			ariaDownload: '下载', ariaFrameStep: '逐帧播放', ariaPlaybackSpeed: '播放速度',
+			ariaRecord: '录制', ariaScreenshot: '截图', ariaToolbox: '工具箱',
+			captionDownload: '下载', captionFrameStep: '逐帧', captionRecord: '录制',
+			captionScreenshot: '截图', captionSpeed: '速度', captionToolbox: '工具箱',
+			downloadFailed: '下载启动失败。', screenshotFailed: '截图失败。',
+			screenshotNoVideoSource: '当前无法获取可截图的视频来源。',
+		},
+		en: {
+			ariaDownload: 'Download', ariaFrameStep: 'Frame-by-frame playback', ariaPlaybackSpeed: 'Playback speed',
+			ariaRecord: 'Record', ariaScreenshot: 'Screenshot', ariaToolbox: 'Toolbox',
+			captionDownload: 'Download', captionFrameStep: 'Frame', captionRecord: 'Record',
+			captionScreenshot: 'Screenshot', captionSpeed: 'Speed', captionToolbox: 'Toolbox',
+			downloadFailed: 'Failed to start download.', screenshotFailed: 'Screenshot failed.',
+			screenshotNoVideoSource: 'No video source is available for a screenshot.',
+		},
+		ja: {
+			ariaDownload: 'ダウンロード', ariaFrameStep: 'コマ送り再生', ariaPlaybackSpeed: '再生速度',
+			ariaRecord: '録画', ariaScreenshot: 'スクリーンショット', ariaToolbox: 'ツールボックス',
+			captionDownload: '保存', captionFrameStep: 'コマ', captionRecord: '録画',
+			captionScreenshot: '画像', captionSpeed: '速度', captionToolbox: 'ツール',
+			downloadFailed: 'ダウンロードの開始に失敗しました。', screenshotFailed: 'スクリーンショットに失敗しました。',
+			screenshotNoVideoSource: 'スクリーンショット用の動画ソースが見つかりません。',
+		},
+	};
 	const w = window;
 	try {
 		if (w[INSTANCE_KEY] && typeof w[INSTANCE_KEY].destroy === 'function') {
@@ -25,7 +67,15 @@
 			const msg = chrome.i18n.getMessage(key);
 			if (msg) return msg;
 		} catch (_) {}
-		return key;
+		const language = String(navigator.language || '').toLowerCase();
+		const messages = language.startsWith('ja')
+			? FALLBACK_MESSAGES.ja
+			: language.startsWith('en')
+				? FALLBACK_MESSAGES.en
+				: /zh-(cn|sg)|hans/.test(language)
+					? FALLBACK_MESSAGES.zhCN
+					: FALLBACK_MESSAGES.zhTW;
+		return messages[key] || key;
 	}
 
 	let currentIndex = 0;
@@ -39,6 +89,9 @@
 	let lastPlayCompletionAt = 0;
 	let lastAdvanceToNextAt = 0;
 	let autoAdvancePendingUntil = 0;
+	let autoAdvanceSourceShortId = '';
+	let autoAdvanceMountNotBefore = 0;
+	let autoAdvanceMountTimer = null;
 
 	function readSessionIndex() {
 		try {
@@ -84,8 +137,37 @@
 	let mountWorkScheduled = false;
 	let lastAnchorFixAt = 0;
 	let lastOverlayNeutralizeAt = 0;
+	let layoutQuietUntil = 0;
+	let layoutResumeTimer = null;
+	let resizePinnedShortId = '';
+	let urlLockShortId = '';
+	let explicitShortNavUntil = 0;
+	let explicitNavAt = 0;
+	let resizePinnedSequenceId = '';
+	let resizePinnedHost = null;
+	let resizePinnedIndex = -1;
+	let restorePinnedRetryTimer = null;
+	let resizeHoldRaf = 0;
+	let resizeScrollGuard = false;
+	let shortsResizeObserver = null;
+	let windowBoxObserver = null;
+	let resizeUnlockTries = 0;
+	let shortsResizeReady = false;
+	let lastObservedShortsSize = '';
+	let lastWindowResizeAt = 0;
+	let windowLayoutBoxKey = `${window.innerWidth}x${window.innerHeight}|${window.outerWidth}x${window.outerHeight}`;
 	let mainTickInterval = null;
 	let commentsLiftSlotEl = null;
+	let commentsWantedOpen = false;
+	let commentsUserDismissedUntil = 0;
+	let commentsRefreshTries = 0;
+	let lastCommentsFollowShortId = '';
+	let nativeAnchorObserver = null;
+	let nativeAnchorObservedEls = [];
+	let commentsAttrObserver = null;
+	let nativeFollowUntil = 0;
+	let nativeFollowRaf = 0;
+	let lastNativeAnchorKey = '';
 	let speedRootEl = null;
 	let remixRowEl = null;
 	let remixButtonEl = null;
@@ -111,6 +193,13 @@
 	let framePlaybackPrevWasPaused = true;
 	let leftRightVolumeEnabled = true;
 	let panelExpandRightEnabled = true;
+	let toolboxPanelWantedOpen = false;
+	let volumeHoverHideTimer = null;
+	let volumeHoverHostEl = null;
+	let volumeHoverUntil = 0;
+	let volumeHoverPct = 0;
+	let volumeHoverPaintTimer = null;
+	let volumeHoverFocusedEl = null;
 
 	function loadArrowVolumeSetting() {
 		try {
@@ -192,32 +281,40 @@
 	}
 
 	const SHADOW_STYLES = `
-#${ROOT_ID}{--bm-btn-size:48px;--bm-item-height:92px;--bm-item-gap:0px;--bm-caption-color:var(--yt-spec-text-primary,#fff);--bm-top-row-offset:0px;--bm-row-speed:0px;--bm-row-frame:92px;--bm-row-screenshot:184px;--bm-row-record:276px;--bm-row-download:368px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;width:var(--bm-btn-size);margin-bottom:0;flex-shrink:0;pointer-events:auto;row-gap:0;position:relative;overflow:visible;z-index:2147483646}
-#${ROOT_ID} .yts-speed-btn{box-sizing:border-box;width:var(--bm-btn-size);height:var(--bm-btn-size);padding:0;margin:0;border:none;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:Roboto,"YouTube Noto",Arial,sans-serif;font-size:13px;font-weight:600;line-height:1;letter-spacing:-0.02em;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);transition:filter .12s ease,transform .1s ease}
-#${ROOT_ID}[data-bm-theme="dark"] .yts-speed-btn{color:#fff;background-color:rgba(255,255,255,.1)}
-#${ROOT_ID}[data-bm-theme="light"] .yts-speed-btn{color:#0f0f0f;background-color:rgba(0,0,0,.05)}
+#${ROOT_ID}{--bm-btn-size:48px;--bm-item-height:92px;--bm-item-gap:0px;--bm-caption-color:var(--yt-spec-text-primary,#fff);--bm-btn-bg:rgba(255,255,255,.1);--bm-btn-fg:#fff;--bm-btn-bg-hover:rgba(255,255,255,.1);--bm-btn-bg-active:rgba(255,255,255,.2);--bm-btn-backdrop:blur(8px);--bm-icon-size:24px;--bm-caption-size:12px;--bm-caption-weight:500;--bm-top-row-offset:0px;--bm-row-speed:0px;--bm-row-frame:92px;--bm-row-screenshot:184px;--bm-row-record:276px;--bm-row-download:368px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;width:var(--bm-btn-size);margin-bottom:0;flex-shrink:0;pointer-events:auto;row-gap:0;position:relative;overflow:visible;z-index:2147483646}
+#${ROOT_ID}[data-bm-theme="light"]{--bm-btn-bg:rgba(0,0,0,.05);--bm-btn-fg:#0f0f0f;--bm-btn-bg-hover:rgba(0,0,0,.1);--bm-btn-bg-active:rgba(0,0,0,.2);--bm-caption-color:#0f0f0f}
+#${ROOT_ID}[data-bm-overlay-dark]{--bm-btn-bg:rgba(0,0,0,.3);--bm-btn-fg:#fff;--bm-btn-bg-hover:rgba(255,255,255,.1);--bm-btn-bg-active:rgba(255,255,255,.2);--bm-btn-backdrop:none;--bm-caption-color:#fff}
+#${ROOT_ID} .yts-speed-btn{box-sizing:border-box;width:var(--bm-btn-size);height:var(--bm-btn-size);padding:0;margin:0;border:none;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:Roboto,"YouTube Noto",Arial,sans-serif;font-size:13px;font-weight:600;line-height:1;letter-spacing:-0.02em;color:var(--bm-btn-fg,#fff);background-color:var(--bm-btn-bg,rgba(255,255,255,.1));backdrop-filter:var(--bm-btn-backdrop,blur(8px));-webkit-backdrop-filter:var(--bm-btn-backdrop,blur(8px));transition:none;position:relative;overflow:hidden}
+#${ROOT_ID} .yts-speed-btn::after{content:"";position:absolute;inset:0;border-radius:inherit;background:transparent;pointer-events:none}
+#${ROOT_ID}[data-bm-theme="dark"] .yts-speed-btn{color:var(--bm-btn-fg,#fff);background-color:var(--bm-btn-bg,rgba(255,255,255,.1))}
+#${ROOT_ID}[data-bm-theme="light"] .yts-speed-btn{color:var(--bm-btn-fg,#0f0f0f);background-color:var(--bm-btn-bg,rgba(0,0,0,.05))}
+#${ROOT_ID}[data-bm-overlay-dark] .yts-speed-btn{color:var(--bm-btn-fg,#fff);background-color:var(--bm-btn-bg,rgba(0,0,0,.3));backdrop-filter:none;-webkit-backdrop-filter:none}
 #${ROOT_ID} .yts-speed-btn.yts-speed-locked{cursor:not-allowed;filter:saturate(.7)}
+#${ROOT_ID} .yts-speed-btn.yts-speed-locked:hover{filter:saturate(.7)}
 #${ROOT_ID} .yts-speed-lock-icon{display:none}
 #${ROOT_ID} .yts-speed-btn.yts-speed-locked .yts-speed-lock-icon{display:block}
 #${ROOT_ID} .yts-speed-btn.yts-speed-locked .yts-speed-value{display:none}
 #${ROOT_ID} .yts-record-btn{position:relative;overflow:hidden}
 #${ROOT_ID} .yts-record-btn.yts-recording-active{background-color:var(--yt-spec-static-brand-white,#fff);color:var(--yt-spec-static-brand-black,#000)}
 #${ROOT_ID} .yts-record-btn.yts-recording-active .yts-toolbox-icon{display:none}
-#${ROOT_ID} .yts-record-percent{display:none;font-size:16px;font-weight:700;line-height:1;color:currentColor}
+#${ROOT_ID} .yts-record-percent{display:none;font-size:16px;font-weight:700;line-height:1;color:currentColor;position:relative;z-index:1}
 #${ROOT_ID} .yts-record-btn.yts-recording-active .yts-record-percent{display:block}
 #${ROOT_ID} .yts-manual-record-btn.yts-recording-active{background-color:var(--yt-spec-static-brand-white,#fff);color:var(--yt-spec-static-brand-black,#000)}
 #${ROOT_ID} .yts-frame-btn.yts-frame-active{background-color:var(--yt-spec-static-brand-white,#fff);color:var(--yt-spec-static-brand-black,#000)}
 #${ROOT_ID} .yts-tool-main-btn{position:relative}
-#${ROOT_ID} .yts-tool-main-btn .yts-toolbox-icon{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)}
-#${ROOT_ID} .yts-speed-value{font-size:20px;font-weight:600;line-height:1;letter-spacing:-0.02em}
-#${ROOT_ID} .yts-speed-btn:hover{filter:brightness(1.14)}
-#${ROOT_ID} .yts-speed-btn:active{filter:brightness(.92);transform:scale(.96)}
-#${ROOT_ID} .yts-speed-caption{margin-top:6px;max-width:56px;text-align:center;font-family:Roboto,"YouTube Noto",Arial,sans-serif;font-size:12px;font-weight:500;line-height:1.2;color:var(--bm-caption-color,inherit)!important;opacity:1;white-space:nowrap}
+#${ROOT_ID} .yts-tool-main-btn .yts-toolbox-icon{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:1}
+#${ROOT_ID} .yts-speed-value{font-size:20px;font-weight:600;line-height:1;letter-spacing:-0.02em;position:relative;z-index:1}
+#${ROOT_ID} .yts-speed-btn:hover{filter:none;background-color:var(--bm-btn-bg,rgba(255,255,255,.1))}
+#${ROOT_ID} .yts-speed-btn:hover::after{background:var(--bm-btn-bg-hover,rgba(255,255,255,.1))}
+#${ROOT_ID} .yts-speed-btn:active{filter:none;transform:none}
+#${ROOT_ID} .yts-speed-btn:active::after{background:var(--bm-btn-bg-active,rgba(255,255,255,.2))}
+#${ROOT_ID} .yts-speed-caption{margin-top:6px;max-width:56px;text-align:center;font-family:Roboto,"YouTube Noto",Arial,sans-serif;font-size:var(--bm-caption-size,12px);font-weight:var(--bm-caption-weight,500);line-height:1.2;color:var(--bm-caption-color,inherit)!important;opacity:1;white-space:nowrap}
 #${ROOT_ID}[data-bm-theme="dark"] .yts-speed-caption{color:#fff!important}
 #${ROOT_ID}[data-bm-theme="light"] .yts-speed-caption{color:#0f0f0f!important}
-#${ROOT_ID} .yts-toolbox-icon{width:25px;height:25px;display:block;margin:0 auto}
-#${ROOT_ID} .yts-toolbox-panel{position:absolute;top:0;left:calc(100% + 8px);display:block;width:var(--bm-btn-size);min-height:calc(var(--bm-row-download) + var(--bm-item-height));opacity:0;transform:translateX(-4px) scale(.98);transform-origin:left top;pointer-events:none;transition:opacity .15s ease,transform .15s ease;z-index:2147483647}
-#${ROOT_ID}[data-open="1"] .yts-toolbox-panel{opacity:1;transform:translateX(0) scale(1);pointer-events:auto}
+#${ROOT_ID}[data-bm-overlay-dark] .yts-speed-caption{color:#fff!important}
+#${ROOT_ID} .yts-toolbox-icon{width:var(--bm-icon-size,24px);height:var(--bm-icon-size,24px);display:block;margin:0 auto;position:relative;z-index:1}
+#${ROOT_ID} .yts-toolbox-panel{position:absolute;top:0;left:calc(100% + 8px);display:block;width:var(--bm-btn-size);min-height:calc(var(--bm-row-download) + var(--bm-item-height));opacity:0;transform:translateX(-4px) scale(.98);transform-origin:left top;pointer-events:none;transition:opacity .15s ease,transform .15s ease;z-index:2147483646}
+#${ROOT_ID}[data-open="1"] .yts-toolbox-panel{opacity:1;transform:translateX(0) scale(1);pointer-events:auto;z-index:2147483646}
 #${ROOT_ID}[data-expand-up=""] .yts-toolbox-panel{top:auto;bottom:calc(100% + 8px);left:0;right:auto;display:flex;flex-direction:column-reverse;gap:10px;min-height:auto;transform:translateY(4px) scale(.98);transform-origin:center bottom}
 #${ROOT_ID}[data-expand-up=""][data-open="1"] .yts-toolbox-panel{transform:translateY(0) scale(1)}
 #${ROOT_ID}[data-expand-up=""] .yts-toolbox-panel .yts-tool-item{position:relative;left:auto;top:auto;height:auto}
@@ -250,16 +347,63 @@
 				scope
 			) ||
 			querySelectorDeep('#like-button button.yt-spec-button-shape-next', scope) ||
-			querySelectorDeep('like-button-view-model button.yt-spec-button-shape-next', scope);
+			querySelectorDeep('like-button-view-model button.yt-spec-button-shape-next', scope) ||
+			querySelectorDeep('like-button-view-model button.ytSpecButtonShapeNextHost', scope) ||
+			querySelectorDeep('like-button-view-model button', scope);
 		if (!ref || !isInReelActionUi(ref)) return null;
 		return ref;
 	}
 
-	function getThemeFallbacks() {
-		if (isYouTubeDarkTheme()) {
-			return { btnBg: 'rgba(255, 255, 255, 0.1)', btnFg: '#fff', captionFg: '#fff' };
-		}
-		return { btnBg: 'rgba(0, 0, 0, 0.05)', btnFg: '#0f0f0f', captionFg: '#0f0f0f' };
+	function parseCssColor(s) {
+		if (!s) return null;
+		const m = String(s).match(
+			/rgba?\(\s*([\d.]+)\s*[, ]\s*([\d.]+)\s*[, ]\s*([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)/i
+		);
+		if (!m) return null;
+		let a = m[4] === undefined ? 1 : Number(m[4]);
+		if (a > 1) a /= 100;
+		return {
+			r: Number(m[1]),
+			g: Number(m[2]),
+			b: Number(m[3]),
+			a,
+		};
+	}
+
+	function looksLightFrost(bg) {
+		const c = parseCssColor(bg);
+		return !!(c && c.r > 160 && c.g > 160 && c.b > 160 && c.a > 0.02 && c.a <= 0.28);
+	}
+
+	function looksDarkFill(bg) {
+		const c = parseCssColor(bg);
+		return !!(c && c.r < 48 && c.g < 48 && c.b < 48 && c.a >= 0.18);
+	}
+
+	function formatRgba(c) {
+		if (!c) return '';
+		const a = Math.round(c.a * 1000) / 1000;
+		return `rgba(${Math.round(c.r)}, ${Math.round(c.g)}, ${Math.round(c.b)}, ${a})`;
+	}
+
+	function mixCssColor(from, toward, amount) {
+		if (!from || !toward) return from;
+		return {
+			r: from.r + (toward.r - from.r) * amount,
+			g: from.g + (toward.g - from.g) * amount,
+			b: from.b + (toward.b - from.b) * amount,
+			a: from.a + (toward.a - from.a) * amount,
+		};
+	}
+
+	function nativeButtonLooksOverlayDark(btn) {
+		if (!(btn instanceof HTMLElement)) return false;
+		if (btn.matches(':hover') || btn.matches(':active')) return false;
+		const bg = readVisibleBackground(btn);
+		if (looksLightFrost(bg)) return false;
+		if (looksDarkFill(bg)) return true;
+		const cls = `${btn.className || ''} ${btn.getAttribute('class') || ''}`;
+		return /OverlayDark|overlay-dark/i.test(cls);
 	}
 
 	function readVisibleColor(el) {
@@ -272,15 +416,57 @@
 
 	function readVisibleBackground(el) {
 		if (!(el instanceof HTMLElement)) return '';
+		if (el.matches(':hover') || el.matches(':active')) return '';
 		const cs = getComputedStyle(el);
 		let bg = cs.backgroundColor;
-		if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') return bg;
-		const fill = el.querySelector('.yt-spec-touch-feedback-shape__fill');
-		if (fill instanceof HTMLElement) {
+		const parsed = parseCssColor(bg);
+		if (parsed && parsed.a > 0.02) return bg;
+		const fill = el.querySelector(
+			'.yt-spec-touch-feedback-shape__fill, .ytSpecTouchFeedbackShapeFill'
+		);
+		if (fill instanceof HTMLElement && !fill.matches(':hover')) {
 			bg = getComputedStyle(fill).backgroundColor;
-			if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') return bg;
+			const fillParsed = parseCssColor(bg);
+			if (fillParsed && fillParsed.a > 0.02) return bg;
 		}
 		return '';
+	}
+
+	function deriveButtonHoverBg(bg, overlayDark) {
+		if (overlayDark) return 'rgba(255, 255, 255, 0.1)';
+		if (isYouTubeDarkTheme()) return 'rgba(255, 255, 255, 0.1)';
+		return 'rgba(0, 0, 0, 0.1)';
+	}
+
+	function deriveButtonActiveBg(bg, overlayDark) {
+		if (overlayDark) return 'rgba(255, 255, 255, 0.2)';
+		if (isYouTubeDarkTheme()) return 'rgba(255, 255, 255, 0.2)';
+		return 'rgba(0, 0, 0, 0.2)';
+	}
+
+	function getThemeFallbacks(overlayDark) {
+		if (overlayDark) {
+			return {
+				btnBg: 'rgba(0, 0, 0, 0.3)',
+				btnFg: '#fff',
+				captionFg: '#fff',
+				backdrop: 'none',
+			};
+		}
+		if (isYouTubeDarkTheme()) {
+			return {
+				btnBg: 'rgba(255, 255, 255, 0.1)',
+				btnFg: '#fff',
+				captionFg: '#fff',
+				backdrop: 'blur(8px)',
+			};
+		}
+		return {
+			btnBg: 'rgba(0, 0, 0, 0.05)',
+			btnFg: '#0f0f0f',
+			captionFg: '#0f0f0f',
+			backdrop: 'blur(8px)',
+		};
 	}
 
 	function findNativeLikeCaptionElement() {
@@ -303,69 +489,569 @@
 	function syncSpeedUiWithNativeLike() {
 		const root = speedRootEl;
 		if (!root || !root.isConnected) return;
-		const btns = Array.from(root.querySelectorAll('.yts-speed-btn'));
-		const caps = Array.from(root.querySelectorAll('.yts-speed-caption'));
-		const stylableBtns = btns.filter(
-			(btn) => btn instanceof HTMLElement && !btn.classList.contains('yts-recording-active')
-		);
-		if (!btns.length) return;
-
 		const dark = isYouTubeDarkTheme();
+		const ref = findVisibleNativeLikeButton() || findNativeLikeButtonForStyle();
+		const overlayDark = nativeButtonLooksOverlayDark(ref);
 		root.setAttribute('data-bm-theme', dark ? 'dark' : 'light');
+		root.toggleAttribute('data-bm-overlay-dark', overlayDark);
 
-		const fallbacks = getThemeFallbacks();
+		const fallbacks = getThemeFallbacks(overlayDark);
 		let btnBg = fallbacks.btnBg;
 		let btnFg = fallbacks.btnFg;
 		let capFg = fallbacks.captionFg;
+		let backdrop = fallbacks.backdrop;
 
-		const ref = findNativeLikeButtonForStyle();
-		if (ref && ref.isConnected) {
+		if (ref && ref.isConnected && !ref.matches(':hover') && !ref.matches(':active')) {
 			const nativeBg = readVisibleBackground(ref);
 			const nativeFg = readVisibleColor(ref);
+			const nativeBackdrop =
+				getComputedStyle(ref).backdropFilter || getComputedStyle(ref).webkitBackdropFilter || '';
 			if (nativeBg) btnBg = nativeBg;
 			if (nativeFg) btnFg = nativeFg;
+			if (overlayDark) backdrop = 'none';
+			else if (nativeBackdrop && nativeBackdrop !== 'none') backdrop = nativeBackdrop;
+		} else if (overlayDark) {
+			backdrop = 'none';
 		}
 
 		const captionEl = findNativeLikeCaptionElement();
 		const nativeCapFg = readVisibleColor(captionEl);
 		if (nativeCapFg) capFg = nativeCapFg;
+		if (captionEl instanceof HTMLElement) {
+			const capCs = getComputedStyle(captionEl);
+			const size = parseFloat(capCs.fontSize);
+			if (size >= 10 && size <= 16) root.style.setProperty('--bm-caption-size', `${size}px`);
+			if (capCs.fontWeight) root.style.setProperty('--bm-caption-weight', capCs.fontWeight);
+		}
+		if (ref instanceof HTMLElement) {
+			const icon =
+				ref.querySelector('.ytIconWrapperHost, .yt-spec-button-shape-next__icon, svg') ||
+				ref;
+			const ir = icon.getBoundingClientRect();
+			const iconSize = Math.round(Math.min(ir.width, ir.height));
+			if (iconSize >= 16 && iconSize <= 32) {
+				root.style.setProperty('--bm-icon-size', `${iconSize}px`);
+			}
+		}
 
+		root.style.setProperty('--bm-btn-bg', btnBg);
+		root.style.setProperty('--bm-btn-fg', btnFg);
+		root.style.setProperty('--bm-btn-bg-hover', deriveButtonHoverBg(btnBg, overlayDark));
+		root.style.setProperty('--bm-btn-bg-active', deriveButtonActiveBg(btnBg, overlayDark));
+		root.style.setProperty('--bm-btn-backdrop', backdrop);
 		root.style.setProperty('--bm-caption-color', capFg);
-		stylableBtns.forEach((btn) => {
-			if (!(btn instanceof HTMLElement)) return;
-			btn.style.backgroundColor = btnBg;
-			btn.style.color = btnFg;
+	}
+
+	function startNativeAnchorFollow(ms = 480) {
+		nativeFollowUntil = Math.max(nativeFollowUntil, Date.now() + ms);
+		if (nativeFollowRaf) return;
+		const loop = () => {
+			nativeFollowRaf = 0;
+			syncToolboxLayoutWithNative();
+			syncCommentsOpenDocumentFlag();
+			syncSpeedUiWithNativeLike();
+			if (Date.now() < nativeFollowUntil) nativeFollowRaf = requestAnimationFrame(loop);
+		};
+		syncToolboxLayoutWithNative();
+		syncCommentsOpenDocumentFlag();
+		syncSpeedUiWithNativeLike();
+		nativeFollowRaf = requestAnimationFrame(loop);
+	}
+
+	function stopNativeAnchorFollow() {
+		nativeFollowUntil = 0;
+		if (nativeFollowRaf) {
+			cancelAnimationFrame(nativeFollowRaf);
+			nativeFollowRaf = 0;
+		}
+	}
+
+	function ensureNativeAnchorObserver() {
+		const likeRow = findFallbackAnchorRow();
+		if (!(likeRow instanceof HTMLElement) || typeof ResizeObserver !== 'function') return;
+		if (!nativeAnchorObserver) {
+			nativeAnchorObserver = new ResizeObserver(() => startNativeAnchorFollow(120));
+		}
+		const next = [likeRow];
+		const bar = getReelActionBarFromNode(likeRow);
+		if (bar instanceof HTMLElement) next.push(bar);
+		const overlay = getHostOverlay(likeRow);
+		if (overlay instanceof HTMLElement) next.push(overlay);
+		const same =
+			next.length === nativeAnchorObservedEls.length &&
+			next.every((el, i) => el === nativeAnchorObservedEls[i]);
+		if (same) return;
+		nativeAnchorObservedEls.forEach((el) => {
+			try {
+				nativeAnchorObserver.unobserve(el);
+			} catch (_) {}
 		});
-		caps.forEach((cap) => {
-			if (cap instanceof HTMLElement) cap.style.color = capFg;
+		next.forEach((el) => nativeAnchorObserver.observe(el));
+		nativeAnchorObservedEls = next;
+	}
+
+	function ensureCommentsAttrObserver() {
+		if (commentsAttrObserver) return;
+		commentsAttrObserver = new MutationObserver(() => {
+			const open = isCommentsPanelOpen();
+			if (open && Date.now() >= commentsUserDismissedUntil) commentsWantedOpen = true;
+			syncCommentsOpenDocumentFlag();
+			startNativeAnchorFollow(560);
+			if (pendingCommentsRefreshAfterAdvance) refreshCommentsPanelForCurrentShort();
+			else rememberSettledCommentsIfCurrent();
 		});
+		const host =
+			document.querySelector('ytd-page-manager') ||
+			document.querySelector('ytd-app') ||
+			document.body;
+		if (!(host instanceof HTMLElement)) return;
+		commentsAttrObserver.observe(host, {
+			subtree: true,
+			attributes: true,
+			attributeFilter: ['visibility', 'hidden', 'target-id', 'video-id'],
+		});
+	}
+
+	function isCommentsCloseClickFromEvent(e) {
+		if (!e || typeof e.composedPath !== 'function') return false;
+		for (const node of e.composedPath()) {
+			if (!(node instanceof Element)) continue;
+			const closeHost = node.closest
+				? node.closest(
+						'#visibility-button, #dismiss-button, ytd-engagement-panel-title-header-renderer'
+					)
+				: null;
+			if (!closeHost) continue;
+			const panel = closeHost.closest(
+				'ytd-engagement-panel-section-list-renderer, ytd-comments-panel'
+			);
+			if (!(panel instanceof HTMLElement)) continue;
+			const hint = `${panel.getAttribute('target-id') || ''} ${panel.id || ''}`;
+			if (/comment/i.test(hint)) return true;
+		}
+		return false;
+	}
+
+	function noteCommentsDismissedByUser() {
+		commentsWantedOpen = false;
+		commentsUserDismissedUntil = Date.now() + 1600;
+		pendingCommentsRefreshAfterAdvance = false;
+		commentsRefreshInProgress = false;
+		commentsSnapshotBeforeAdvance = '';
+		commentsFollowUntil = 0;
+		stopCommentsFollowLoop();
+	}
+
+	function isCommentsHeaderCloseFromEvent(e) {
+		if (!e || typeof e.composedPath !== 'function') return false;
+		for (const node of e.composedPath()) {
+			if (!(node instanceof Element)) continue;
+			if (!node.closest('#visibility-button, #dismiss-button')) continue;
+			const panel = node.closest(
+				'ytd-engagement-panel-section-list-renderer, ytd-comments-panel'
+			);
+			if (!(panel instanceof HTMLElement)) continue;
+			const hint = `${panel.getAttribute('target-id') || ''} ${panel.id || ''}`;
+			if (/comment/i.test(hint)) return true;
+		}
+		return false;
+	}
+
+	function getCommentsOverlayScrim() {
+		const scrim = document.querySelector('#anchored-panel-scrim');
+		return scrim instanceof HTMLElement ? scrim : null;
+	}
+
+	function isVisibleCommentsDismissScrim(scrim = getCommentsOverlayScrim()) {
+		if (!(scrim instanceof HTMLElement)) return false;
+		const cs = getComputedStyle(scrim);
+		if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+		if (cs.pointerEvents === 'none') return false;
+		const opacity = Number(cs.opacity);
+		if (Number.isFinite(opacity) && opacity <= 0.02) return false;
+		const r = scrim.getBoundingClientRect();
+		return r.width >= 24 && r.height >= 24;
+	}
+
+	function commentsPanelOverlaysPlayer() {
+		const panel = getOpenCommentsPanel();
+		const video =
+			getActiveShortsVideo() ||
+			document.querySelector('#shorts-player') ||
+			document.querySelector(
+				'ytd-reel-video-renderer[is-active], ytd-reel-video-renderer[reel-active], ytd-reel-video-renderer'
+			);
+		if (!(panel instanceof HTMLElement) || !(video instanceof Element)) return false;
+		const pr = panel.getBoundingClientRect();
+		const vr = video.getBoundingClientRect();
+		if (pr.width < 40 || pr.height < 40 || vr.width < 40 || vr.height < 40) return false;
+		const overlapX = Math.min(pr.right, vr.right) - Math.max(pr.left, vr.left);
+		const overlapY = Math.min(pr.bottom, vr.bottom) - Math.max(pr.top, vr.top);
+		const overlap = Math.max(0, overlapX) * Math.max(0, overlapY);
+		return overlap > vr.width * vr.height * 0.2;
+	}
+
+	function isCommentsSidePanelLayout() {
+		if (commentsPanelOverlaysPlayer()) return false;
+		const panel = getOpenCommentsPanel();
+		const video = getActiveShortsVideo() || document.querySelector('#shorts-player');
+		if (panel instanceof HTMLElement && video instanceof Element) {
+			const pr = panel.getBoundingClientRect();
+			const vr = video.getBoundingClientRect();
+			if (pr.width >= 40 && vr.width >= 40 && pr.left >= vr.right - 16) return true;
+		}
+		if (isVisibleCommentsDismissScrim()) return false;
+		const shorts = document.querySelector('ytd-shorts');
+		return !!(shorts && shorts.hasAttribute('is-watch-while-mode'));
+	}
+
+	function shouldDismissCommentsOnOutsideClick(e) {
+		if (!isCommentsPanelOpen()) return false;
+		if (isCommentsSidePanelLayout()) return false;
+		if (!e || typeof e.composedPath !== 'function') return false;
+		const path = e.composedPath();
+		for (const node of path) {
+			if (!(node instanceof Element)) continue;
+			if (node.id === ROOT_ID || (speedRootEl && (node === speedRootEl || speedRootEl.contains(node)))) {
+				return false;
+			}
+			if (isInsideCommentsPanel(node)) return false;
+			if (node.closest('reel-action-bar-view-model, .ytReelPlayerOverlayViewModelActionsContainer')) {
+				return false;
+			}
+			const actions = node.closest('#actions');
+			if (actions && !isWatchPageActions(actions) && !isInsideCommentsPanel(actions)) return false;
+		}
+		return path.some(
+			(node) =>
+				node instanceof Element &&
+				(node.id === 'anchored-panel-scrim' ||
+					!!node.closest(
+						'#anchored-panel-scrim, #shorts-panel-container, ytd-shorts, #shorts-container, #shorts-player, ytd-reel-video-renderer'
+					))
+		);
+	}
+
+	function onCommentsUiPointer(e) {
+		const toggle = isCommentsToggleClickFromEvent(e);
+		const headerClose = isCommentsHeaderCloseFromEvent(e);
+		const closeish = headerClose || isCommentsCloseClickFromEvent(e);
+		if (toggle || closeish) {
+			if (headerClose || (toggle && isCommentsPanelOpen())) noteCommentsDismissedByUser();
+			else if (toggle) commentsWantedOpen = true;
+			startNativeAnchorFollow(720);
+			setTimeout(() => {
+				if (!commentsWantedOpen) commentsWantedOpen = false;
+				else commentsWantedOpen = isCommentsPanelOpen();
+				syncCommentsOpenDocumentFlag();
+				syncToolboxLayoutWithNative();
+			}, 40);
+			return;
+		}
+		if (e.type !== 'click') return;
+		if (!shouldDismissCommentsOnOutsideClick(e)) return;
+		noteCommentsDismissedByUser();
+		const viaNativeScrim = e.composedPath().some(
+			(node) =>
+				node instanceof Element &&
+				(node.id === 'anchored-panel-scrim' || node.closest('#anchored-panel-scrim'))
+		);
+		if (!viaNativeScrim) {
+			if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+			e.stopPropagation();
+			e.preventDefault();
+			closeCommentsPanelIfOpen();
+		}
+		startNativeAnchorFollow(720);
+		setTimeout(() => {
+			syncCommentsOpenDocumentFlag();
+			syncToolboxLayoutWithNative();
+		}, 40);
+	}
+
+	function isOnScreenActionRect(rect) {
+		if (!rect) return false;
+		if (!(rect.width >= 24 && rect.height >= 24)) return false;
+		if (rect.right <= 8 || rect.bottom <= 8) return false;
+		if (rect.left >= window.innerWidth - 8 || rect.top >= window.innerHeight - 8) return false;
+		return true;
+	}
+
+	function isMastheadGhostRect(rect) {
+		if (!rect) return true;
+		return rect.left < 72 && rect.top < 80;
+	}
+
+	function isButtonSizedActionRect(rect) {
+		if (!isOnScreenActionRect(rect) || isMastheadGhostRect(rect)) return false;
+		if (rect.width > 140 || rect.height > 180) return false;
+		return true;
+	}
+
+	function isUsableActionAnchorRect(rect) {
+		return isButtonSizedActionRect(rect);
+	}
+
+	function nativeItemPitch(root) {
+		const raw = parseFloat(
+			root instanceof HTMLElement
+				? getComputedStyle(root).getPropertyValue('--bm-item-height')
+				: ''
+		);
+		return Number.isFinite(raw) && raw >= 56 && raw <= 160 ? raw : 92;
+	}
+
+	function getRowAnchorRect(row) {
+		if (!(row instanceof HTMLElement)) return null;
+		const rr = row.getBoundingClientRect();
+		// Prefer the whole rail item (button + caption), not just the 48px circle.
+		if (isButtonSizedActionRect(rr) && rr.height >= 56) return rr;
+		const btn =
+			row.querySelector('button') ||
+			(typeof querySelectorDeep === 'function' ? querySelectorDeep('button', row) : null);
+		if (btn instanceof HTMLElement) {
+			const br = btn.getBoundingClientRect();
+			if (isButtonSizedActionRect(br)) {
+				const pitch = nativeItemPitch(speedRootEl);
+				return {
+					left: br.left,
+					top: br.top,
+					width: br.width,
+					height: pitch,
+					right: br.left + br.width,
+					bottom: br.top + pitch,
+				};
+			}
+		}
+		return isButtonSizedActionRect(rr) ? rr : null;
+	}
+
+	function scoreActionAnchorRect(rect) {
+		if (!isUsableActionAnchorRect(rect)) return -1;
+		let score = 1000;
+		const video = getActiveShortsVideo();
+		if (!(video instanceof HTMLElement)) return score;
+		const vr = video.getBoundingClientRect();
+		if (
+			!(vr.width >= 40 && vr.height >= 40) ||
+			vr.bottom <= 0 ||
+			vr.top >= window.innerHeight ||
+			vr.right <= 0 ||
+			vr.left >= window.innerWidth
+		) {
+			return score;
+		}
+		const dx = Math.abs(rect.left - vr.right);
+		const dy = Math.abs((rect.top + rect.bottom) / 2 - (vr.top + vr.bottom) / 2);
+		score = 100000 - dx - dy;
+		if (rect.bottom > vr.top && rect.top < vr.bottom) score += 5000;
+		return score;
+	}
+
+	function toolboxHasStableFixedPosition(root) {
+		if (!(root instanceof HTMLElement)) return false;
+		const left = parseFloat(root.style.left);
+		const top = parseFloat(root.style.top);
+		const width = parseFloat(root.style.width) || 48;
+		const height = parseFloat(root.style.height) || 48;
+		if (!Number.isFinite(left) || !Number.isFinite(top)) return false;
+		if (left <= -1000 || top <= -1000) return false;
+		return isOnScreenActionRect({
+			left,
+			top,
+			width,
+			height,
+			right: left + width,
+			bottom: top + height,
+		}) && !isMastheadGhostRect({ left, top, width, height, right: left + width, bottom: top + height });
+	}
+
+	function isParkedToolboxPosition(root) {
+		if (!(root instanceof HTMLElement)) return true;
+		const left = parseFloat(root.style.left);
+		const top = parseFloat(root.style.top);
+		return !Number.isFinite(left) || !Number.isFinite(top) || left <= -1000 || top <= -1000;
+	}
+
+	function keepToolboxPaintedOnShorts(root) {
+		if (!(root instanceof HTMLElement)) return;
+		if (!isOnShortsPath()) {
+			root.style.visibility = 'hidden';
+			return;
+		}
+		if (isParkedToolboxPosition(root)) return;
+		root.style.visibility = 'visible';
+		root.style.setProperty('pointer-events', 'auto', 'important');
+		root.style.setProperty('z-index', TOOLBOX_TOP_Z, 'important');
+		if (isCommentsPanelOpen()) raiseToolboxAboveComments();
+	}
+
+	function keepBodyToolboxVisibleOnShorts(root) {
+		keepToolboxPaintedOnShorts(root);
+	}
+
+	function isVisibleNativeRailButton(btn) {
+		if (!(btn instanceof HTMLElement)) return false;
+		if (speedRootEl && speedRootEl.contains(btn)) return false;
+		if (!isInReelActionUi(btn)) return false;
+		const r = btn.getBoundingClientRect();
+		if (r.width < 24 || r.height < 24 || r.width > 140 || r.height > 140) return false;
+		if (r.bottom <= 0 || r.top >= window.innerHeight) return false;
+		if (r.right <= 0 || r.left >= window.innerWidth) return false;
+		if (r.left < 72 && r.top < 80) return false;
+		const cs = getComputedStyle(btn);
+		if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+		return true;
+	}
+
+	function findVisibleNativeLikeButton() {
+		const scoped = findNativeLikeButtonForStyle();
+		if (isVisibleNativeRailButton(scoped)) return scoped;
+
+		const nodes = document.querySelectorAll(
+			'like-button-view-model button, #like-button button, segmented-like-button-view-model button, reel-action-bar-view-model button'
+		);
+		let best = null;
+		let bestScore = -1;
+		const vh = window.innerHeight;
+		const vw = window.innerWidth;
+		nodes.forEach((btn) => {
+			if (!isVisibleNativeRailButton(btn)) return;
+			const label = `${btn.getAttribute('aria-label') || ''} ${btn.getAttribute('title') || ''}`;
+			const isLike = /(like|喜歡|点赞|讚|いいね)/i.test(label);
+			const host = btn.closest(
+				'like-button-view-model, #like-button, segmented-like-button-view-model'
+			);
+			if (!isLike && !host) return;
+			const r = btn.getBoundingClientRect();
+			const iw = Math.min(r.right, vw) - Math.max(r.left, 0);
+			const ih = Math.min(r.bottom, vh) - Math.max(r.top, 0);
+			const cy = (r.top + r.bottom) / 2;
+			const score = Math.max(0, iw) * Math.max(0, ih) * (1.2 - Math.abs(cy - vh / 2) / vh);
+			if (score > bestScore) {
+				bestScore = score;
+				best = btn;
+			}
+		});
+		return best;
+	}
+
+	function measureNativeRailPitch(btn) {
+		const fallback = nativeItemPitch(speedRootEl);
+		if (!(btn instanceof HTMLElement)) return fallback;
+		const row = findActionRowElement(btn);
+		const parent = (row && row.parentElement) || getReelActionBarFromNode(btn);
+		if (!(parent instanceof HTMLElement)) return fallback;
+		const buttons = [];
+		for (const child of parent.children) {
+			if (!(child instanceof HTMLElement)) continue;
+			const b = child.querySelector('button');
+			if (b instanceof HTMLElement) buttons.push(b);
+		}
+		let idx = -1;
+		for (let i = 0; i < buttons.length; i++) {
+			if (buttons[i] === btn || buttons[i].contains(btn) || btn.contains(buttons[i])) {
+				idx = i;
+				break;
+			}
+		}
+		const next = idx >= 0 ? buttons[idx + 1] : null;
+		if (next instanceof HTMLElement) {
+			const a = btn.getBoundingClientRect();
+			const b = next.getBoundingClientRect();
+			const pitch = b.top - a.top;
+			if (pitch >= 56 && pitch <= 180) return pitch;
+		}
+		return fallback;
+	}
+
+	function placeToolboxAgainstLikeButton(root, likeBtn) {
+		if (!(root instanceof HTMLElement) || !(likeBtn instanceof HTMLElement)) return false;
+		const br = likeBtn.getBoundingClientRect();
+		if (!isVisibleNativeRailButton(likeBtn)) return false;
+		const pitch = measureNativeRailPitch(likeBtn);
+		const wantLeft = br.left;
+		const wantTop = br.top - pitch;
+		root.style.visibility = 'visible';
+		root.style.setProperty('position', 'fixed', 'important');
+		root.style.setProperty('left', `${wantLeft}px`, 'important');
+		root.style.setProperty('top', `${wantTop}px`, 'important');
+		root.style.setProperty('width', `${br.width}px`, 'important');
+		root.style.setProperty('height', `${pitch}px`, 'important');
+		root.style.setProperty('margin', '0px', 'important');
+		root.style.setProperty('z-index', TOOLBOX_TOP_Z, 'important');
+		root.style.setProperty('pointer-events', 'auto', 'important');
+		root.style.setProperty('--bm-top-row-offset', '0px');
+		const size = Math.max(br.width, br.height);
+		if (size >= 32 && size <= 96) root.style.setProperty('--bm-btn-size', `${size}px`);
+		if (pitch >= 56 && pitch <= 180) root.style.setProperty('--bm-item-height', `${pitch}px`);
+		if (isCommentsPanelOpen()) raiseToolboxAboveComments();
+		const mainBtn =
+			root.querySelector('.yts-tool-item-main .yts-speed-btn') ||
+			root.querySelector('.yts-speed-btn');
+		if (mainBtn instanceof HTMLElement) {
+			const mb = mainBtn.getBoundingClientRect();
+			const dx = wantLeft - mb.left;
+			const dy = wantTop - mb.top;
+			if (Math.abs(dx) >= 0.2 || Math.abs(dy) >= 0.2) {
+				root.style.setProperty('left', `${wantLeft + dx}px`, 'important');
+				root.style.setProperty('top', `${wantTop + dy}px`, 'important');
+			}
+		}
+		return true;
 	}
 
 	function syncToolboxLayoutWithNative() {
 		const root = speedRootEl;
 		if (!(root instanceof HTMLElement) || !root.isConnected) return;
-		const likeRow = findFallbackAnchorRow();
-		if (!(likeRow instanceof HTMLElement) || !likeRow.parentElement) return;
+		applyToolboxPanelOpenState(root);
+		if (!isOnShortsPath()) {
+			root.style.visibility = 'hidden';
+			return;
+		}
+
+		const likeBtn = findVisibleNativeLikeButton();
+		if (likeBtn instanceof HTMLElement) {
+			placeToolboxAgainstLikeButton(root, likeBtn);
+		} else {
+			keepToolboxPaintedOnShorts(root);
+			return;
+		}
+
+		const likeRow = findActionRowElement(likeBtn) || findFallbackAnchorRow();
+		if (!(likeRow instanceof HTMLElement) || !likeRow.parentElement) {
+			placeToolboxAgainstLikeButton(root, likeBtn);
+			return;
+		}
+
 		const layoutHost = getToolboxLayoutHost();
 		const hostOverlay = getHostOverlay(layoutHost);
-		const likeOverlay = getHostOverlay(likeRow);
-		if (hostOverlay && likeOverlay && hostOverlay !== likeOverlay) return;
-
-		const likeBtn = findNativeLikeButtonForStyle();
-		if (likeBtn instanceof HTMLElement) {
-			const rect = likeBtn.getBoundingClientRect();
-			const size = Math.round(Math.max(rect.width, rect.height));
-			if (Number.isFinite(size) && size >= 32) {
-				root.style.setProperty('--bm-btn-size', `${size}px`);
+		const bodyHosted = isToolboxOnBodyHost(root) || root.parentElement === document.body;
+		const actionBar = getReelActionBarFromNode(likeRow);
+		const posParent = actionBar && actionBar.parentElement;
+		if (
+			!bodyHosted &&
+			posParent instanceof HTMLElement &&
+			root.parentElement === posParent &&
+			actionBar &&
+			!actionBar.contains(root)
+		) {
+			const parentRect = posParent.getBoundingClientRect();
+			const likeRect = likeRow.getBoundingClientRect();
+			if (parentRect.width > 0 && likeRect.height > 0) {
+				root.style.position = 'absolute';
+				root.style.left = `${likeRect.left - parentRect.left}px`;
+				root.style.top = `${likeRect.top - parentRect.top - likeRect.height}px`;
+				root.style.width = `${likeRect.width}px`;
+				root.style.height = `${likeRect.height}px`;
+				root.style.margin = '0px';
+				root.style.zIndex = '2';
+				root.style.pointerEvents = 'auto';
 			}
 		}
 
-		const rowRect = likeRow.getBoundingClientRect();
-		const rowHeight = Math.round(rowRect.height);
-		const likeRowStyle = getComputedStyle(likeRow);
-		root.style.height = `${Math.max(1, rowHeight)}px`;
-		root.style.marginTop = likeRowStyle.marginTop || '0px';
-		root.style.marginBottom = likeRowStyle.marginBottom || '0px';
+		const rowRect = getRowAnchorRect(likeRow) || likeRow.getBoundingClientRect();
+		const rowHeight = rowRect.height;
 
 		const siblings = Array.from(likeRow.parentElement.children).filter(
 			(el) =>
@@ -376,18 +1062,13 @@
 				!!el.querySelector('button')
 		);
 		const idx = siblings.indexOf(likeRow);
-		if (idx < 0 && Number.isFinite(rowHeight) && rowHeight >= 56) {
+		if (idx < 0 && Number.isFinite(rowHeight) && rowHeight >= 56 && rowHeight <= 160) {
 			root.style.setProperty('--bm-item-height', `${rowHeight}px`);
 			root.style.setProperty('--bm-item-gap', '0px');
 		}
 		root.style.setProperty('--bm-caption-color', isYouTubeDarkTheme() ? '#fff' : '#0f0f0f');
-		const topOffset =
-			likeBtn instanceof HTMLElement
-				? Math.round(likeBtn.getBoundingClientRect().top - rowRect.top)
-				: 0;
-		root.style.setProperty('--bm-top-row-offset', `${Math.max(0, topOffset)}px`);
+		root.style.setProperty('--bm-top-row-offset', '0px');
 
-		const rootTop = root.getBoundingClientRect().top;
 		const rowBtnCenter = (row) => {
 			if (!(row instanceof HTMLElement)) return NaN;
 			if (hostOverlay && !hostOverlay.contains(row)) return NaN;
@@ -403,19 +1084,26 @@
 		const beforeLikeCenter = rowBtnCenter(siblings[idx - 1]);
 		const fallbackPitch =
 			Number.isFinite(dislikeCenter) && Number.isFinite(likeCenter)
-				? Math.round(Math.abs(dislikeCenter - likeCenter))
+				? Math.abs(dislikeCenter - likeCenter)
 				: Math.max(56, rowHeight);
 
+		if (Number.isFinite(fallbackPitch) && fallbackPitch >= 56 && fallbackPitch <= 160) {
+			root.style.setProperty('--bm-item-height', `${fallbackPitch}px`);
+		}
+
+		placeToolboxAgainstLikeButton(root, likeBtn);
+
+		const rootTop = root.getBoundingClientRect().top;
 		const btnSizeRaw = parseFloat(getComputedStyle(root).getPropertyValue('--bm-btn-size'));
 		const btnSize = Number.isFinite(btnSizeRaw) && btnSizeRaw > 0 ? btnSizeRaw : 48;
 		const toTopByCenter = (centerY, fallbackMul) => {
-			if (!Number.isFinite(centerY)) return Math.round(fallbackPitch * fallbackMul);
-			return Math.max(0, Math.round(centerY - rootTop - btnSize / 2));
+			if (!Number.isFinite(centerY)) return fallbackPitch * fallbackMul;
+			return Math.max(0, centerY - rootTop - btnSize / 2);
 		};
 		const mainBtn = root.querySelector('.yts-tool-item-main .yts-speed-btn');
 		const mainTop =
 			mainBtn instanceof HTMLElement
-				? Math.max(0, Math.round(mainBtn.getBoundingClientRect().top - rootTop))
+				? Math.max(0, mainBtn.getBoundingClientRect().top - rootTop)
 				: 0;
 		const speedTop = mainTop;
 		const frameTop = toTopByCenter(likeCenter, 1);
@@ -428,9 +1116,6 @@
 		root.style.setProperty('--bm-row-record', `${recordTop}px`);
 		root.style.setProperty('--bm-row-download', `${downloadTop}px`);
 		root.style.setProperty('--bm-item-gap', '0px');
-		if (Number.isFinite(fallbackPitch) && fallbackPitch >= 56) {
-			root.style.setProperty('--bm-item-height', `${fallbackPitch}px`);
-		}
 
 		root.style.setProperty('--bm-caption-color', isYouTubeDarkTheme() ? '#fff' : '#0f0f0f');
 		lastLayoutDiag = {
@@ -473,6 +1158,7 @@
 				: '';
 			root.dataset.bmDiagThemeDark = isYouTubeDarkTheme() ? '1' : '0';
 		} catch (_) {}
+		ensureNativeAnchorObserver();
 	}
 
 	function isYouTubeDarkTheme() {
@@ -856,14 +1542,116 @@
 	function isInsideCommentsPanel(el) {
 		if (!el) return false;
 		return !!el.closest(
-			'ytd-comments-panel, ytd-engagement-panel, ytd-engagement-panel-section, ytd-comment-renderer, ytd-comment-thread-renderer, ytd-comment-simplebox-renderer, ytd-comment-action-buttons-renderer, #engagement-panel'
+			'ytd-comments-panel, ytd-engagement-panel, ytd-engagement-panel-section, ytd-engagement-panel-section-list-renderer[target-id*="comment"], ytd-comment-renderer, ytd-comment-thread-renderer, ytd-comment-simplebox-renderer, ytd-comment-action-buttons-renderer, [target-id="engagement-panel-comments-section"], #engagement-panel'
 		);
+	}
+
+	function isTypingTarget(el) {
+		if (!(el instanceof Element)) return false;
+		if (el.isContentEditable) return true;
+		const tag = el.tagName;
+		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+		return !!el.closest('input, textarea, select, [contenteditable="true"]');
+	}
+
+	function eventPathElements(e) {
+		const out = [];
+		try {
+			const path = e && typeof e.composedPath === 'function' ? e.composedPath() : [];
+			for (const n of path) {
+				if (n instanceof Element) out.push(n);
+			}
+		} catch (_) {}
+		if (e && e.target instanceof Element && !out.includes(e.target)) out.unshift(e.target);
+		return out;
+	}
+
+	function eventTouchesCommentsUi(e) {
+		for (const el of eventPathElements(e)) {
+			if (isInsideCommentsPanel(el)) return true;
+		}
+		return false;
+	}
+
+	function eventTouchesShortsFeedNav(e) {
+		if (eventTouchesCommentsUi(e)) return false;
+		for (const el of eventPathElements(e)) {
+			if (el.closest(`#${ROOT_ID}`)) return false;
+			if (
+				el.closest(
+					'#navigation-button-down, #navigation-button-up, .navigation-container, #shorts-container, #shorts-player, ytd-reel-video-renderer'
+				)
+			) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	function isWatchPageActions(el) {
+		return !!(
+			el instanceof Element &&
+			el.id === 'actions' &&
+			el.closest('ytd-watch-metadata, ytd-watch-flexy')
+		);
+	}
+
+	function findReelActionBar(scope) {
+		if (!scope) return null;
+		const accept = (host) => {
+			if (!(host instanceof HTMLElement)) return null;
+			if (isWatchPageActions(host)) return null;
+			if (isInsideCommentsPanel(host)) return null;
+			return host;
+		};
+		if (scope instanceof Element) {
+			const extracted =
+				accept(scope.closest('reel-action-bar-view-model')) ||
+				accept(scope.querySelector('reel-action-bar-view-model'));
+			if (extracted) return extracted;
+			const actions = accept(scope.id === 'actions' ? scope : scope.querySelector('#actions'));
+			if (actions) return actions;
+		}
+		return (
+			accept(querySelectorDeep('reel-action-bar-view-model', scope)) ||
+			accept(querySelectorDeep('#actions', scope))
+		);
+	}
+
+	function getReelActionBarFromNode(node) {
+		if (!(node instanceof Element)) return null;
+		const extracted = node.closest('reel-action-bar-view-model');
+		if (extracted instanceof HTMLElement) return extracted;
+		const actions = node.closest('#actions');
+		if (actions instanceof HTMLElement && !isWatchPageActions(actions)) return actions;
+		return null;
 	}
 
 	function isInReelActionUi(el) {
 		if (!el) return false;
+		if (speedRootEl && (el === speedRootEl || (el instanceof Node && speedRootEl.contains(el)))) {
+			return true;
+		}
 		if (isInsideCommentsPanel(el)) return false;
-		return !!(el.closest('ytd-reel-player-overlay-renderer') || el.closest('#shorts-player'));
+		return !!(
+			el.closest('ytd-reel-player-overlay-renderer') ||
+			el.closest('reel-action-bar-view-model') ||
+			el.closest('#shorts-player')
+		);
+	}
+
+	function isToolboxOnBodyHost(root = speedRootEl) {
+		return !!(
+			root instanceof HTMLElement &&
+			root.isConnected &&
+			root.dataset.ytsFixedHost === '1' &&
+			(root.parentElement === document.body || root.parentElement === document.documentElement)
+		);
+	}
+
+	function applyToolboxPanelOpenState(root = speedRootEl) {
+		if (!(root instanceof HTMLElement)) return;
+		root.dataset.open = toolboxPanelWantedOpen ? '1' : '0';
 	}
 
 	function getVisibleReelOverlays() {
@@ -879,11 +1667,662 @@
 		return out.map((x) => x.el);
 	}
 
+	function rendererHasShortId(renderer, id) {
+		if (!(renderer instanceof HTMLElement)) return false;
+		if (!id || id === 'short') return false;
+		const attrs = [
+			renderer.getAttribute('id'),
+			renderer.getAttribute('reel-video-id'),
+			renderer.getAttribute('video-id'),
+			renderer.dataset.videoId,
+		];
+		for (const rid of attrs) {
+			if (!rid || rid === 'reel-video-renderer') continue;
+			if (rid === id || rid.includes(id)) return true;
+		}
+		const links = renderer.querySelectorAll('a[href*="/shorts/"]');
+		for (const a of links) {
+			if (!(a instanceof HTMLAnchorElement)) continue;
+			if (a.closest('yt-reel-carousel-view-model, .ytReelCarouselViewModelHost')) continue;
+			if (/\/hashtag\//i.test(a.getAttribute('href') || '')) continue;
+			if (a.href.includes(`/shorts/${id}`)) return true;
+		}
+		const vi = `/vi/${id}/`;
+		const media = renderer.querySelectorAll('[src*="/vi/"], [srcset*="/vi/"], [style*="/vi/"]');
+		for (const el of media) {
+			const blob = `${el.getAttribute('src') || ''} ${el.getAttribute('srcset') || ''} ${
+				el.getAttribute('style') || ''
+			}`;
+			if (blob.includes(vi)) return true;
+		}
+		return false;
+	}
+
+	function rendererMatchesCurrentShort(renderer) {
+		return rendererHasShortId(renderer, getCurrentShortId());
+	}
+
+	function hasUrlMatchedReelRenderer() {
+		const id = getCurrentShortId();
+		if (!id || id === 'short') return false;
+		const all = document.querySelectorAll('ytd-reel-video-renderer');
+		for (const r of all) {
+			if (rendererMatchesCurrentShort(r)) return true;
+		}
+		return false;
+	}
+
+	function isLikelyActiveReelRenderer(renderer) {
+		if (!(renderer instanceof HTMLElement)) return false;
+		if (renderer.hasAttribute('is-active') || renderer.hasAttribute('reel-active')) return true;
+		if (renderer.getAttribute('aria-hidden') === 'false') return true;
+		const video = renderer.querySelector('video.html5-main-video, video');
+		if (video instanceof HTMLVideoElement && !video.paused && !video.ended) {
+			const r = renderer.getBoundingClientRect();
+			const mid = window.innerHeight / 2;
+			if (r.top < mid && r.bottom > mid) return true;
+		}
+		return false;
+	}
+
+	function canAttachToolboxToRow(row) {
+		if (!(row instanceof Element)) return false;
+		const renderer = row.closest('ytd-reel-video-renderer');
+		if (!(renderer instanceof HTMLElement)) return true;
+		if (rendererMatchesCurrentShort(renderer)) return true;
+		// Never attach into a different Short when we can identify the URL's reel —
+		// doing so makes YouTube activate that reel and change the URL.
+		if (hasUrlMatchedReelRenderer()) return false;
+		if (isLikelyActiveReelRenderer(renderer)) return true;
+		// New Shorts UI often recycles a single renderer with no is-active flag.
+		return document.querySelectorAll('ytd-reel-video-renderer').length === 1;
+	}
+
+	function getPreferredActiveReelRenderer() {
+		const id = getCurrentShortId();
+		const matches = [];
+		if (id && id !== 'short') {
+			document.querySelectorAll('ytd-reel-video-renderer').forEach((r) => {
+				if (rendererMatchesCurrentShort(r)) matches.push(r);
+			});
+		}
+		if (matches.length === 1) return matches[0];
+		if (matches.length > 1) {
+			const active = matches.find((r) => isLikelyActiveReelRenderer(r));
+			if (active) return active;
+			let best = null;
+			let bestArea = -1;
+			const vw = window.innerWidth;
+			const vh = window.innerHeight;
+			for (const r of matches) {
+				const rect = r.getBoundingClientRect();
+				const iw = Math.min(rect.right, vw) - Math.max(rect.left, 0);
+				const ih = Math.min(rect.bottom, vh) - Math.max(rect.top, 0);
+				const area = Math.max(0, iw) * Math.max(0, ih);
+				if (area > bestArea) {
+					bestArea = area;
+					best = r;
+				}
+			}
+			if (best) return best;
+			return matches[0];
+		}
+
+		const byAttr =
+			document.querySelector('ytd-reel-video-renderer[is-active]') ||
+			document.querySelector('ytd-reel-video-renderer[reel-active]') ||
+			document.querySelector("ytd-reel-video-renderer[aria-hidden='false']");
+		if (byAttr instanceof HTMLElement) return byAttr;
+
+		const playing = Array.from(
+			document.querySelectorAll('ytd-reel-video-renderer video')
+		).find((v) => v instanceof HTMLVideoElement && !v.paused && !v.ended);
+		if (playing instanceof HTMLVideoElement) {
+			const host = playing.closest('ytd-reel-video-renderer');
+			if (host instanceof HTMLElement) return host;
+		}
+		return null;
+	}
+
+	function overlayFromRenderer(renderer) {
+		if (!(renderer instanceof HTMLElement)) return null;
+		const overlay =
+			renderer.querySelector('ytd-reel-player-overlay-renderer') ||
+			querySelectorDeep('ytd-reel-player-overlay-renderer', renderer);
+		return overlay instanceof HTMLElement && !isInsideCommentsPanel(overlay) ? overlay : null;
+	}
+
+	function isLayoutSettling() {
+		return Date.now() < layoutQuietUntil;
+	}
+
+	function isRecentWindowResize() {
+		return Date.now() - lastWindowResizeAt < WINDOW_RESIZE_HOLD_MS;
+	}
+
+	function getWindowInnerBoxKey() {
+		return `${window.innerWidth}x${window.innerHeight}|${window.outerWidth}x${window.outerHeight}`;
+	}
+
+	function windowSizeChangedFromSample() {
+		return getWindowInnerBoxKey() !== windowLayoutBoxKey;
+	}
+
+	function isResizeHoldRunning() {
+		return document.documentElement.hasAttribute(RESIZE_LOCK_ATTR);
+	}
+
+	function isStaleAgainstWindowResize(at) {
+		return !!(at && lastWindowResizeAt && at <= lastWindowResizeAt);
+	}
+
+	function applyWindowSizeChange() {
+		if (!windowSizeChangedFromSample()) return false;
+		lastWindowResizeAt = Date.now();
+		windowLayoutBoxKey = getWindowInnerBoxKey();
+		if (isStaleAgainstWindowResize(explicitNavAt)) {
+			explicitNavAt = 0;
+			explicitShortNavUntil = 0;
+		}
+		beginResizeLock();
+		return true;
+	}
+
+	function syncWindowSnapLock() {
+		applyWindowSizeChange();
+		if (isResizeHoldRunning() && !isExplicitShortNav()) holdPinnedShortInView();
+	}
+
+	function isBrowserZoomWheel(e) {
+		if (!e || e.type !== 'wheel') return false;
+		return !!(e.ctrlKey || e.metaKey);
+	}
+
+	function isExplicitShortNav() {
+		applyWindowSizeChange();
+		if (windowSizeChangedFromSample()) return false;
+		if (isAutoAdvanceNavigation() && !isStaleAgainstWindowResize(lastAdvanceToNextAt)) {
+			return true;
+		}
+		if (Date.now() >= explicitShortNavUntil) return false;
+		if (isStaleAgainstWindowResize(explicitNavAt)) return false;
+		return true;
+	}
+
+	function noteExplicitShortNav() {
+		explicitNavAt = Date.now();
+		explicitShortNavUntil = explicitNavAt + EXPLICIT_NAV_MS;
+		abortResizeLockForUserNav();
+	}
+
+	function commitUrlLockFromLocation() {
+		applyWindowSizeChange();
+		if (!isExplicitShortNav() && urlLockShortId && urlLockShortId !== 'short') return;
+		const id = getCurrentShortId();
+		if (!id || id === 'short') return;
+		urlLockShortId = id;
+		resizePinnedShortId = id;
+	}
+
+	function isUnauthorizedShortChange() {
+		if (isExplicitShortNav()) return false;
+		if (!urlLockShortId || urlLockShortId === 'short') return false;
+		const now = getCurrentShortId();
+		return !!(now && now !== 'short' && now !== urlLockShortId);
+	}
+
+	function enforceUrlLock() {
+		applyWindowSizeChange();
+		if (!urlLockShortId || urlLockShortId === 'short') {
+			const id = getCurrentShortId();
+			if (id && id !== 'short' && !isResizeHoldRunning()) {
+				urlLockShortId = id;
+				resizePinnedShortId = id;
+			}
+			return;
+		}
+		if (isExplicitShortNav()) {
+			commitUrlLockFromLocation();
+			return;
+		}
+		resizePinnedShortId = urlLockShortId;
+		holdPinnedShortInView();
+		if (getCurrentShortId() !== urlLockShortId && !isResizeHoldRunning()) beginResizeLock();
+	}
+
+	function abortResizeLockForUserNav() {
+		if (!isLayoutSettling() && !document.documentElement.hasAttribute(RESIZE_LOCK_ATTR)) return;
+		stopResizeHoldLoop();
+		setResizeLock(false);
+		layoutQuietUntil = 0;
+		lastWindowResizeAt = 0;
+		resizeUnlockTries = 0;
+		if (layoutResumeTimer) {
+			clearTimeout(layoutResumeTimer);
+			layoutResumeTimer = null;
+		}
+	}
+
+	function noteLayoutSettling(ms = WINDOW_RESIZE_HOLD_MS) {
+		layoutQuietUntil = Math.max(layoutQuietUntil, Date.now() + ms);
+		if (layoutResumeTimer) clearTimeout(layoutResumeTimer);
+		layoutResumeTimer = setTimeout(() => {
+			layoutResumeTimer = null;
+			endResizeLock();
+		}, ms + 80);
+	}
+
+	function findSequenceHostForShortId(id) {
+		if (!id || id === 'short') return null;
+		const renderers = document.querySelectorAll('ytd-reel-video-renderer');
+		for (const r of renderers) {
+			if (!rendererHasShortId(r, id)) continue;
+			const seq = r.closest('.reel-video-in-sequence-new, .reel-video-in-sequence');
+			return seq instanceof HTMLElement ? seq : r;
+		}
+		const needle = `/shorts/${id}`;
+		const vi = `/vi/${id}/`;
+		const items = document.querySelectorAll(
+			'.reel-video-in-sequence-new, .reel-video-in-sequence, ytd-reel-video-renderer'
+		);
+		for (const el of items) {
+			if (!(el instanceof HTMLElement)) continue;
+			if (el.querySelector(`a[href*="${needle}"]`)) return el;
+			const thumb = el.querySelector('[style*="ytimg"], [src*="ytimg"], [srcset*="ytimg"]');
+			const blob = `${el.getAttribute('style') || ''} ${
+				thumb instanceof HTMLElement
+					? `${thumb.getAttribute('style') || ''} ${thumb.getAttribute('src') || ''} ${
+							thumb.getAttribute('srcset') || ''
+						}`
+					: ''
+			}`;
+			if (blob.includes(vi)) return el;
+		}
+		return null;
+	}
+
+	function getShortsScrollContainer() {
+		const main = document.querySelector('#shorts-container');
+		if (main instanceof HTMLElement) return main;
+		const inner = document.querySelector('#shorts-inner-container');
+		if (inner instanceof HTMLElement) return inner;
+		const shorts = document.querySelector('ytd-shorts');
+		return shorts instanceof HTMLElement ? shorts : null;
+	}
+
+	function allShortsScrollers() {
+		const out = [];
+		['#shorts-container', '#shorts-inner-container'].forEach((sel) => {
+			const el = document.querySelector(sel);
+			if (el instanceof HTMLElement && !out.includes(el)) out.push(el);
+		});
+		return out;
+	}
+
+	function listSequenceItems() {
+		const inner = document.querySelector('#shorts-inner-container');
+		const root = inner instanceof HTMLElement ? inner : getShortsScrollContainer();
+		if (!(root instanceof HTMLElement)) return [];
+		const direct = Array.from(
+			root.querySelectorAll(
+				':scope > .reel-video-in-sequence-new, :scope > .reel-video-in-sequence'
+			)
+		);
+		if (direct.length) return direct;
+		return Array.from(
+			document.querySelectorAll('.reel-video-in-sequence-new, .reel-video-in-sequence')
+		);
+	}
+
+	function shortIdFromHost(host) {
+		if (!(host instanceof HTMLElement)) return '';
+		const renderer =
+			host.tagName === 'YTD-REEL-VIDEO-RENDERER'
+				? host
+				: host.querySelector('ytd-reel-video-renderer');
+		if (renderer instanceof HTMLElement) {
+			const attrs = [
+				renderer.getAttribute('reel-video-id'),
+				renderer.getAttribute('video-id'),
+				renderer.dataset.videoId,
+			];
+			for (const rid of attrs) {
+				if (rid && rid !== 'reel-video-renderer' && rid !== 'short') return rid;
+			}
+			const links = renderer.querySelectorAll('a[href*="/shorts/"]');
+			for (const a of links) {
+				if (!(a instanceof HTMLAnchorElement)) continue;
+				if (a.closest('yt-reel-carousel-view-model, .ytReelCarouselViewModelHost')) continue;
+				const m = `${a.getAttribute('href') || ''} ${a.href || ''}`.match(
+					/\/shorts\/([^/?#]+)/
+				);
+				if (m && m[1] && m[1] !== 'short') return m[1];
+			}
+		}
+		const blob = `${host.getAttribute('style') || ''} ${
+			host.querySelector('[style*="/vi/"], [src*="/vi/"]')?.getAttribute('style') || ''
+		} ${host.querySelector('[src*="/vi/"]')?.getAttribute('src') || ''}`;
+		const tm = blob.match(/\/vi\/([^/]+)\//);
+		return tm ? tm[1] : '';
+	}
+
+	function shortsViewportSizeKey() {
+		const sc = getShortsScrollContainer();
+		const box =
+			sc instanceof HTMLElement
+				? `${Math.round(sc.clientWidth)}x${Math.round(sc.clientHeight)}`
+				: '0x0';
+		return `${box}|${window.innerWidth}x${window.innerHeight}`;
+	}
+
+	function alignHostInScroller(sc, host) {
+		if (!(sc instanceof HTMLElement) || !(host instanceof HTMLElement)) return;
+		const scRect = sc.getBoundingClientRect();
+		const hostRect = host.getBoundingClientRect();
+		if (scRect.height < 8) return;
+		const delta = hostRect.top - scRect.top;
+		if (!Number.isFinite(delta) || Math.abs(delta) < 0.5) return;
+		const next = Math.max(0, sc.scrollTop + delta);
+		if (Math.abs(sc.scrollTop - next) < 0.5) return;
+		try {
+			sc.scrollTo({ top: next, behavior: 'instant' });
+		} catch (_) {
+			sc.scrollTop = next;
+		}
+	}
+
+	function centerShortsHostInScroller(host) {
+		if (!(host instanceof HTMLElement)) return;
+		const items = listSequenceItems();
+		const idx = items.indexOf(host);
+		const sc = getShortsScrollContainer();
+		if (sc instanceof HTMLElement && idx >= 0) {
+			const first = items[0];
+			const slotH =
+				first instanceof HTMLElement && first.offsetHeight > 8
+					? first.offsetHeight
+					: sc.clientHeight;
+			if (slotH > 8) {
+				const target = idx * slotH;
+				if (Math.abs(sc.scrollTop - target) >= 1) {
+					try {
+						sc.scrollTo({ top: target, behavior: 'instant' });
+					} catch (_) {
+						sc.scrollTop = target;
+					}
+				}
+			}
+		}
+		allShortsScrollers().forEach((el) => alignHostInScroller(el, host));
+	}
+
+	function captureVisibleShortPin() {
+		const items = listSequenceItems();
+		const sc = getShortsScrollContainer();
+		let host = null;
+		let idx = -1;
+		if (sc instanceof HTMLElement && items.length) {
+			const sr = sc.getBoundingClientRect();
+			let best = -1;
+			items.forEach((item, i) => {
+				const r = item.getBoundingClientRect();
+				const overlap = Math.max(
+					0,
+					Math.min(r.bottom, sr.bottom) - Math.max(r.top, sr.top)
+				);
+				if (overlap > best) {
+					best = overlap;
+					host = item;
+					idx = i;
+				}
+			});
+		}
+		const id = (host && shortIdFromHost(host)) || getCurrentShortId();
+		if (!id || id === 'short') return;
+		resizePinnedShortId = id;
+		if (host instanceof HTMLElement) {
+			resizePinnedHost = host;
+			resizePinnedSequenceId = host.getAttribute('id') || '';
+			resizePinnedIndex = idx;
+		}
+	}
+
+	function rememberLiveShortPin(force = false) {
+		if (!isExplicitShortNav()) {
+			if (urlLockShortId && urlLockShortId !== 'short') resizePinnedShortId = urlLockShortId;
+			return;
+		}
+		if (
+			!force &&
+			isResizeHoldRunning() &&
+			resizePinnedShortId &&
+			resizePinnedShortId !== 'short'
+		) {
+			return;
+		}
+		captureVisibleShortPin();
+		commitUrlLockFromLocation();
+	}
+
+	function findPinnedSequenceHost(pin) {
+		const items = listSequenceItems();
+		if (pin && pin !== 'short') {
+			for (let i = 0; i < items.length; i++) {
+				const item = items[i];
+				const renderer = item.querySelector('ytd-reel-video-renderer') || item;
+				if (shortIdFromHost(item) === pin || rendererHasShortId(renderer, pin)) {
+					resizePinnedHost = item;
+					resizePinnedIndex = i;
+					return item;
+				}
+			}
+			const byShort = findSequenceHostForShortId(pin);
+			if (byShort instanceof HTMLElement) {
+				resizePinnedHost = byShort;
+				return byShort;
+			}
+		}
+		if (resizePinnedIndex >= 0 && items[resizePinnedIndex] instanceof HTMLElement) {
+			resizePinnedHost = items[resizePinnedIndex];
+			return items[resizePinnedIndex];
+		}
+		if (resizePinnedHost instanceof HTMLElement && resizePinnedHost.isConnected) {
+			return resizePinnedHost;
+		}
+		if (!resizePinnedSequenceId) return null;
+		let safe = resizePinnedSequenceId;
+		try {
+			safe = CSS.escape(resizePinnedSequenceId);
+		} catch (_) {}
+		const bySlot = document.querySelector(
+			`.reel-video-in-sequence-new[id="${safe}"], .reel-video-in-sequence[id="${safe}"]`
+		);
+		return bySlot instanceof HTMLElement ? bySlot : null;
+	}
+
+	function resumePinnedShortMedia(host, pin) {
+		// Never auto-play. Space, click-to-pause, and media keys must stay in charge.
+		void host;
+		void pin;
+	}
+
+	function holdPinnedShortInView() {
+		if (resizeScrollGuard) return;
+		resizeScrollGuard = true;
+		try {
+			const pin = resizePinnedShortId || getCurrentShortId();
+			const host = findPinnedSequenceHost(pin);
+			if (host instanceof HTMLElement) centerShortsHostInScroller(host);
+			resumePinnedShortMedia(host, pin);
+		} finally {
+			resizeScrollGuard = false;
+		}
+	}
+
+	function setResizeLock(on) {
+		if (on) document.documentElement.setAttribute(RESIZE_LOCK_ATTR, '');
+		else document.documentElement.removeAttribute(RESIZE_LOCK_ATTR);
+	}
+
+	function startResizeHoldLoop() {
+		if (resizeHoldRaf) return;
+		const loop = () => {
+			holdPinnedShortInView();
+			if (
+				isLayoutSettling() ||
+				document.documentElement.hasAttribute(RESIZE_LOCK_ATTR)
+			) {
+				resizeHoldRaf = requestAnimationFrame(loop);
+			} else {
+				resizeHoldRaf = 0;
+			}
+		};
+		holdPinnedShortInView();
+		resizeHoldRaf = requestAnimationFrame(loop);
+	}
+
+	function stopResizeHoldLoop() {
+		if (resizeHoldRaf) {
+			cancelAnimationFrame(resizeHoldRaf);
+			resizeHoldRaf = 0;
+		}
+	}
+
+	function beginResizeLock() {
+		lastObservedShortsSize = shortsViewportSizeKey();
+		if (urlLockShortId && urlLockShortId !== 'short') resizePinnedShortId = urlLockShortId;
+		setResizeLock(true);
+		noteLayoutSettling(WINDOW_RESIZE_HOLD_MS);
+		ensureShortsResizeObserver();
+		ensureWindowBoxObserver();
+		startResizeHoldLoop();
+		holdPinnedShortInView();
+	}
+
+	function endResizeLock() {
+		const pin = urlLockShortId || resizePinnedShortId;
+		if (pin && pin !== 'short') resizePinnedShortId = pin;
+		holdPinnedShortInView();
+		const stillOff = !!(pin && pin !== 'short' && getCurrentShortId() !== pin);
+		if (stillOff && resizeUnlockTries < 20 && !isExplicitShortNav()) {
+			resizeUnlockTries += 1;
+			startResizeHoldLoop();
+			noteLayoutSettling(180);
+			return;
+		}
+		resizeUnlockTries = 0;
+		restorePinnedShortAfterResize();
+		stopResizeHoldLoop();
+		setResizeLock(false);
+		const recorrect = () => {
+			if (isExplicitShortNav()) return;
+			holdPinnedShortInView();
+			restorePinnedShortAfterResize();
+		};
+		requestAnimationFrame(() => {
+			recorrect();
+			requestAnimationFrame(recorrect);
+		});
+		scheduleMountWork();
+	}
+
+	function ensureShortsResizeObserver() {
+		if (typeof ResizeObserver !== 'function') return;
+		if (!shortsResizeObserver) {
+			shortsResizeObserver = new ResizeObserver(() => {
+				syncWindowSnapLock();
+				const key = shortsViewportSizeKey();
+				if (!shortsResizeReady) {
+					shortsResizeReady = true;
+					lastObservedShortsSize = key;
+					return;
+				}
+				if (key === lastObservedShortsSize) return;
+				lastObservedShortsSize = key;
+				if (isLayoutSettling() && isRecentWindowResize()) {
+					holdPinnedShortInView();
+					startResizeHoldLoop();
+				}
+			});
+		}
+		const sc = getShortsScrollContainer();
+		const inner = document.querySelector('#shorts-inner-container');
+		if (sc instanceof HTMLElement) shortsResizeObserver.observe(sc);
+		if (inner instanceof HTMLElement) shortsResizeObserver.observe(inner);
+	}
+
+	function ensureWindowBoxObserver() {
+		if (typeof ResizeObserver !== 'function') return;
+		if (windowBoxObserver) return;
+		windowBoxObserver = new ResizeObserver(() => syncWindowSnapLock());
+		windowBoxObserver.observe(document.documentElement);
+	}
+
+	function isOnShortsPath() {
+		return /\/shorts\//.test(location.pathname);
+	}
+
+	function revealActiveNativeRail() {
+		if (!isOnShortsPath()) return;
+		const preferred = getPreferredActiveReelRenderer();
+		const keep =
+			preferred ||
+			document.querySelector('ytd-reel-video-renderer[extract-overlay], ytd-reel-video-renderer');
+		if (!(keep instanceof HTMLElement)) return;
+		const overlayRoot =
+			keep.querySelector('#experiment-overlay') ||
+			keep.querySelector('ytd-reel-player-overlay-renderer')?.closest('#experiment-overlay') ||
+			keep.querySelector('ytd-reel-player-overlay-renderer');
+		document.querySelectorAll('#experiment-overlay').forEach((el) => {
+			if (!(el instanceof HTMLElement)) return;
+			const isKeep = el === overlayRoot || keep.contains(el);
+			if (isKeep) {
+				el.style.setProperty('opacity', '1', 'important');
+				el.style.setProperty('pointer-events', 'none', 'important');
+				el.dataset.ytsOverlayRevealed = '1';
+			} else if (el.dataset.ytsOverlayRevealed === '1') {
+				el.style.removeProperty('opacity');
+				el.style.removeProperty('pointer-events');
+				delete el.dataset.ytsOverlayRevealed;
+			}
+		});
+		const overlay = overlayFromRenderer(keep) || keep;
+		const bar = findReelActionBar(overlay);
+		const hosts = [bar, bar && bar.parentElement].filter(
+			(el) => el instanceof HTMLElement
+		);
+		hosts.forEach((el) => {
+			el.style.setProperty('visibility', 'visible', 'important');
+			el.style.setProperty('opacity', '1', 'important');
+			el.style.setProperty('pointer-events', 'auto', 'important');
+			el.dataset.ytsRailRevealed = '1';
+		});
+		document.querySelectorAll('[data-yts-rail-revealed="1"]').forEach((el) => {
+			if (!(el instanceof HTMLElement) || hosts.includes(el)) return;
+			el.style.removeProperty('visibility');
+			el.style.removeProperty('opacity');
+			el.style.removeProperty('pointer-events');
+			delete el.dataset.ytsRailRevealed;
+		});
+	}
+
+	function isElementVisiblyOnScreen(el) {
+		if (!(el instanceof Element)) return false;
+		const r = el.getBoundingClientRect();
+		if (r.width < 4 || r.height < 4) return false;
+		if (r.bottom <= 0 || r.top >= window.innerHeight) return false;
+		if (r.right <= 0 || r.left >= window.innerWidth) return false;
+		return true;
+	}
+
+	function rowRenderer(row) {
+		return row instanceof Element ? row.closest('ytd-reel-video-renderer') : null;
+	}
+
 	function scopeHasActionBar(scope) {
 		if (!scope) return false;
 		return !!(
-			(scope instanceof Element && scope.querySelector('#actions')) ||
-			querySelectorDeep('#actions', scope) ||
+			findReelActionBar(scope) ||
 			querySelectorDeep('#like-button', scope) ||
 			querySelectorDeep('like-button-view-model', scope) ||
 			querySelectorDeep('segmented-like-dislike-button-view-model', scope)
@@ -899,15 +2338,42 @@
 		return speedRootEl;
 	}
 
+	function overlayIsUsableScope(overlay) {
+		if (!(overlay instanceof HTMLElement) || isInsideCommentsPanel(overlay)) return false;
+		if (!scopeHasActionBar(overlay)) return false;
+		const r = overlay.getBoundingClientRect();
+		if (r.width < 8 || r.height < 8) return false;
+		if (r.bottom <= 0 || r.top >= window.innerHeight) return false;
+		if (r.right <= 0 || r.left >= window.innerWidth) return false;
+		return true;
+	}
+
 	function getShortsReelUiScopeRoot() {
+		const preferred = getPreferredActiveReelRenderer();
+		const preferredOverlay = overlayFromRenderer(preferred);
+		if (overlayIsUsableScope(preferredOverlay)) return preferredOverlay;
+
 		for (const overlay of getVisibleReelOverlays()) {
-			if (scopeHasActionBar(overlay)) return overlay;
+			if (preferred && preferred.contains(overlay) && overlayIsUsableScope(overlay)) {
+				return overlay;
+			}
+		}
+		for (const overlay of getVisibleReelOverlays()) {
+			if (overlayIsUsableScope(overlay)) return overlay;
+		}
+
+		const extracted = document.querySelector('reel-action-bar-view-model');
+		if (extracted instanceof HTMLElement && !isInsideCommentsPanel(extracted)) {
+			const r = extracted.getBoundingClientRect();
+			if (isUsableActionAnchorRect(r) || (r.width >= 24 && r.height >= 80 && r.left >= 72)) {
+				return extracted;
+			}
 		}
 
 		const overlay =
 			document.querySelector('ytd-reel-player-overlay-renderer') ||
 			querySelectorDeep('ytd-reel-player-overlay-renderer', document.documentElement);
-		if (overlay && !isInsideCommentsPanel(overlay)) return overlay;
+		if (overlayIsUsableScope(overlay)) return overlay;
 
 		const sp =
 			document.querySelector('#shorts-player') ||
@@ -974,10 +2440,18 @@
 	}
 
 	function maybeNeutralizeBlockingOverlays() {
-		const now = Date.now();
-		if (now - lastOverlayNeutralizeAt < 3000) return;
-		lastOverlayNeutralizeAt = now;
-		neutralizeBlockingOverlays();
+		// Do not alter YouTube overlay nodes.  Their action rail is rebuilt
+		// dynamically, and changing a sibling's pointer handling can leave the
+		// complete native button column unavailable after a rebuild.
+		restoreNeutralizedOverlays();
+	}
+
+	function restoreNeutralizedOverlays() {
+		document.querySelectorAll('[data-yts-toolbox-overlay-neutralized="1"]').forEach((el) => {
+			if (!(el instanceof HTMLElement)) return;
+			el.style.removeProperty('pointer-events');
+			delete el.dataset.ytsToolboxOverlayNeutralized;
+		});
 	}
 
 	function neutralizeBlockingOverlays() {
@@ -1039,10 +2513,29 @@
 			inner.closest('reel-action-bar-item-renderer');
 		if (byItem && byItem.parentElement) return byItem;
 
+		const bar = getReelActionBarFromNode(inner);
+		if (bar) {
+			const tagged = inner.closest(
+				'like-button-view-model, dislike-button-view-model, comments-button-view-model, button-view-model'
+			);
+			if (tagged instanceof HTMLElement) {
+				let row = tagged;
+				while (row.parentElement && row.parentElement !== bar) {
+					row = row.parentElement;
+				}
+				if (row.parentElement === bar) return row;
+			}
+		}
+
+		// Never walk above the action rail itself; otherwise a flex-column
+		// ancestor of the whole overlay could be picked and we would inject
+		// the toolbox into the wrong container.
+		const actionsBoundary = bar || inner.closest('#actions');
 		let n = inner;
 		for (let depth = 0; depth < 28 && n; depth++) {
 			const p = n.parentElement;
 			if (!p) break;
+			if (actionsBoundary && !actionsBoundary.contains(p)) break;
 			const cs = getComputedStyle(p);
 			if (
 				cs.display.includes('flex') &&
@@ -1056,35 +2549,32 @@
 		return null;
 	}
 
+	function isRootDockedBeforeRow(root, row) {
+		return isToolboxOnBodyHost(root) && row instanceof Element;
+	}
+
 	function attachRootAtRow(root, row) {
-		const column = row.parentElement;
-		if (!column) return false;
-		if (row.contains(root) || root.contains(row) || root.contains(column)) return false;
+		const bodyHost = root instanceof HTMLElement && root.dataset.ytsFixedHost === '1';
+		if (!bodyHost && !canAttachToolboxToRow(row)) return false;
+		if (row && (row.contains(root) || root.contains(row))) return false;
+		if (isToolboxOnBodyHost(root)) {
+			applyToolboxPanelOpenState(root);
+			return true;
+		}
 		mutatingDom = true;
 		try {
-			if (!safeInsertBefore(column, root, row)) return false;
-			const rn = root.getRootNode();
-			if (rn instanceof ShadowRoot) {
-				ensureStylesInShadowRoot(rn);
+			// Host on document.body so the toolbox can paint above YouTube's
+			// comments panel (a sibling of the player, not of the action rail).
+			if (root.parentElement !== document.body) {
+				document.body.appendChild(root);
 			}
-			if (getComputedStyle(column).flexDirection === 'column-reverse') {
-				const rr = root.getBoundingClientRect();
-				const lr = row.getBoundingClientRect();
-				if (!(rr.top < lr.top)) {
-					if (row.nextSibling) {
-						safeInsertBefore(column, root, row.nextSibling);
-					} else {
-						safeInsertBefore(column, root, null);
-					}
-					if (!(root.getBoundingClientRect().top < row.getBoundingClientRect().top)) {
-						safeInsertBefore(column, root, row);
-					}
-				}
-			}
+			root.dataset.ytsFixedHost = '1';
+			delete root.dataset.ytsCommentsLift;
+			applyToolboxPanelOpenState(root);
 		} finally {
 			mutatingDom = false;
 		}
-		return true;
+		return root.isConnected;
 	}
 
 	function isRemixText(s) {
@@ -1148,33 +2638,24 @@
 	function ensureSpeedAnchorIntact() {
 		if (!speedRootEl || !speedRootEl.isConnected) return;
 		if (isToolboxLiftedAboveComments()) return;
-		if (!isInReelActionUi(speedRootEl)) {
-			remountToolboxToCurrentShort();
+		if (isLayoutSettling()) return;
+		if (!toolboxIsOnCurrentShort()) {
+			forceToolboxOntoCurrentShort();
 			return;
 		}
+		applyToolboxPanelOpenState();
+		if (isToolboxOnBodyHost()) return;
 		const likeRow = findFallbackAnchorRow();
-		if (!likeRow || !likeRow.parentElement) return;
-		const column = likeRow.parentElement;
-		const rootOverlay = getHostOverlay(speedRootEl);
-		const likeOverlay = getHostOverlay(likeRow);
-		const overlayMismatch = !!(rootOverlay && likeOverlay && rootOverlay !== likeOverlay);
-		if (
-			!overlayMismatch &&
-			speedRootEl.parentElement === column &&
-			speedRootEl.nextSibling === likeRow
-		) {
-			return;
-		}
-		if (!overlayMismatch && Date.now() - lastAnchorFixAt < 500) return;
+		if (!likeRow || !likeRow.parentElement || !canAttachToolboxToRow(likeRow)) return;
+		if (isRootDockedBeforeRow(speedRootEl, likeRow)) return;
+		if (Date.now() - lastAnchorFixAt < 300) return;
 		lastAnchorFixAt = Date.now();
 		attachRootAtRow(speedRootEl, likeRow);
 	}
 
 	function findLikeByAriaFallback(scope) {
 		if (!scope) return null;
-		const actions =
-			(scope instanceof Element && scope.querySelector('#actions')) ||
-			querySelectorDeep('#actions', scope);
+		const actions = findReelActionBar(scope);
 		if (!(actions instanceof HTMLElement)) return null;
 		const buttons = querySelectorAllDeep('button', actions);
 		for (const btn of buttons) {
@@ -1210,9 +2691,7 @@
 
 	function findFirstActionBarRow(scope) {
 		if (!scope) return null;
-		const actions =
-			(scope instanceof Element && scope.querySelector('#actions')) ||
-			querySelectorDeep('#actions', scope);
+		const actions = findReelActionBar(scope);
 		if (!(actions instanceof HTMLElement)) return null;
 		for (const child of actions.children) {
 			if (!(child instanceof HTMLElement)) continue;
@@ -1224,13 +2703,71 @@
 		return null;
 	}
 
-	function findFallbackAnchorRow() {
-		const likeInner = findLikeInner();
-		if (likeInner && likeInner.isConnected) {
-			const likeRow = findActionRowElement(likeInner);
-			if (likeRow) return likeRow;
+	function pushAnchorRowCandidate(rows, inner) {
+		if (!(inner instanceof Element) || !inner.isConnected || !isInReelActionUi(inner)) return;
+		const likeRow = findActionRowElement(inner);
+		if (!(likeRow instanceof HTMLElement)) return;
+		if (!rows.includes(likeRow)) rows.push(likeRow);
+	}
+
+	function collectLikeInnerFromScope(scope) {
+		if (!scope) return null;
+		const hit =
+			querySelectorDeep('#like-button', scope) ||
+			querySelectorDeep('like-button-view-model', scope) ||
+			querySelectorDeep('segmented-like-dislike-button-view-model', scope) ||
+			findLikeByAriaFallback(scope);
+		return hit && isInReelActionUi(hit) ? hit : null;
+	}
+
+	function pickBestAnchorRow(rows) {
+		let best = null;
+		let bestScore = -1;
+		for (const row of rows) {
+			if (!(row instanceof HTMLElement)) continue;
+			const rect = getRowAnchorRect(row);
+			if (!rect) continue;
+			const score = scoreActionAnchorRect(rect);
+			if (score > bestScore) {
+				bestScore = score;
+				best = row;
+			}
 		}
-		return findFirstActionBarRow(getShortsReelUiScopeRoot());
+		return best;
+	}
+
+	function findFallbackAnchorRow() {
+		const rows = [];
+		const preferred = getPreferredActiveReelRenderer();
+		const preferredScope = preferred
+			? overlayFromRenderer(preferred) || preferred
+			: getShortsReelUiScopeRoot();
+		pushAnchorRowCandidate(rows, collectLikeInnerFromScope(preferredScope));
+		pushAnchorRowCandidate(rows, findLikeInner());
+		const first = findFirstActionBarRow(preferredScope || getShortsReelUiScopeRoot());
+		if (first instanceof HTMLElement && !rows.includes(first)) {
+			rows.push(first);
+		}
+
+		let best = pickBestAnchorRow(rows);
+		if (best) return best;
+
+		for (const overlay of getVisibleReelOverlays()) {
+			pushAnchorRowCandidate(rows, collectLikeInnerFromScope(overlay));
+			const overlayFirst = findFirstActionBarRow(overlay);
+			if (overlayFirst instanceof HTMLElement && !rows.includes(overlayFirst)) {
+				rows.push(overlayFirst);
+			}
+		}
+		document.querySelectorAll('reel-action-bar-view-model').forEach((bar) => {
+			if (!(bar instanceof HTMLElement) || isInsideCommentsPanel(bar)) return;
+			pushAnchorRowCandidate(rows, collectLikeInnerFromScope(bar));
+			const barFirst = findFirstActionBarRow(bar);
+			if (barFirst instanceof HTMLElement && !rows.includes(barFirst)) {
+				rows.push(barFirst);
+			}
+		});
+		return pickBestAnchorRow(rows);
 	}
 
 	function isCommentsPanelOpen() {
@@ -1239,19 +2776,20 @@
 		);
 		for (const panel of panels) {
 			if (!(panel instanceof HTMLElement)) continue;
-			if (panel.hasAttribute('hidden')) continue;
-			const vis = panel.getAttribute('visibility');
-			if (vis && vis !== 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED') continue;
-			const cs = getComputedStyle(panel);
-			if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') continue;
-			const rect = panel.getBoundingClientRect();
-			if (rect.width < 80 || rect.height < 120) continue;
-			if (rect.right < 8 || rect.left > window.innerWidth - 8) continue;
-			if (rect.bottom < 8 || rect.top > window.innerHeight - 8) continue;
 			const hint = `${panel.getAttribute('target-id') || ''} ${panel.id || ''} ${
 				panel.getAttribute('panel-id') || ''
 			} ${panel.tagName}`;
 			if (!/comment/i.test(hint)) continue;
+			if (panel.hasAttribute('hidden')) continue;
+			const vis = panel.getAttribute('visibility');
+			if (vis === 'ENGAGEMENT_PANEL_VISIBILITY_HIDDEN') continue;
+			if (vis === 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED') return true;
+			if (vis && vis !== 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED') continue;
+		const cs = getComputedStyle(panel);
+			if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+		const rect = panel.getBoundingClientRect();
+			if (rect.width < 40 || rect.height < 40) continue;
+			if (rect.right < 8 || rect.left > window.innerWidth - 8) continue;
 			return true;
 		}
 		return false;
@@ -1286,10 +2824,23 @@
 	}
 
 	function findCommentsPanelCloseButton() {
-		const panel = document.querySelector(
-			'ytd-engagement-panel-section-list-renderer, ytd-comments-panel'
+		const panel =
+			getOpenCommentsPanel() ||
+			document.querySelector(
+				'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-comments-section"], ytd-comments-panel'
 		);
 		if (!(panel instanceof Element)) return null;
+		const visibilityBtn = querySelectorDeep('#visibility-button button', panel);
+		if (visibilityBtn instanceof HTMLButtonElement) return visibilityBtn;
+		const header = panel.querySelector('ytd-engagement-panel-title-header-renderer');
+		if (header instanceof Element) {
+			const headerButtons = querySelectorAllDeep('button', header);
+			for (const btn of headerButtons) {
+				if (!(btn instanceof HTMLButtonElement)) continue;
+				const label = btn.getAttribute('aria-label') || btn.getAttribute('title') || '';
+				if (/(close|關閉|关闭|閉じる)/i.test(label)) return btn;
+			}
+		}
 		const closeBtn =
 			querySelectorDeep('#dismiss-button button', panel) ||
 			querySelectorDeep('ytd-engagement-panel-title-header-renderer #button', panel) ||
@@ -1339,10 +2890,10 @@
 	function applyLiftedToolboxRect(rect) {
 		if (!(speedRootEl instanceof HTMLElement) || !rect) return;
 		speedRootEl.style.setProperty('position', 'fixed', 'important');
-		speedRootEl.style.setProperty('left', `${Math.round(rect.left)}px`, 'important');
-		speedRootEl.style.setProperty('top', `${Math.round(rect.top)}px`, 'important');
-		speedRootEl.style.setProperty('width', `${Math.round(rect.width)}px`, 'important');
-		speedRootEl.style.setProperty('z-index', '2147483647', 'important');
+		speedRootEl.style.setProperty('left', `${rect.left}px`, 'important');
+		speedRootEl.style.setProperty('top', `${rect.top}px`, 'important');
+		speedRootEl.style.setProperty('width', `${rect.width}px`, 'important');
+		speedRootEl.style.setProperty('z-index', TOOLBOX_TOP_Z, 'important');
 		speedRootEl.style.setProperty('margin', '0', 'important');
 		speedRootEl.style.setProperty('pointer-events', 'auto', 'important');
 	}
@@ -1350,19 +2901,100 @@
 	function clearToolboxLiftStyles() {
 		if (!(speedRootEl instanceof HTMLElement)) return;
 		delete speedRootEl.dataset.ytsCommentsLift;
-		['position', 'left', 'top', 'width', 'margin', 'z-index', 'pointer-events'].forEach((prop) => {
-			speedRootEl.style.removeProperty(prop);
-		});
+	}
+
+	const RAISED_RAIL_STYLE_KEYS = [
+		'position',
+		'top',
+		'left',
+		'right',
+		'bottom',
+		'width',
+		'height',
+		'z-index',
+		'pointer-events',
+		'isolation',
+		'overflow',
+	];
+
+	function snapshotRaisedRailStyles(el) {
+		if (!(el instanceof HTMLElement) || el.dataset.ytsRaisedStyle) return;
+		const saved = {};
+		for (const key of RAISED_RAIL_STYLE_KEYS) {
+			saved[key] = el.style.getPropertyValue(key);
+		}
+		el.dataset.ytsRaisedStyle = JSON.stringify(saved);
+	}
+
+	function restoreRaisedRailStyles(el) {
+		if (!(el instanceof HTMLElement)) return;
+		const raw = el.dataset.ytsRaisedStyle;
+		delete el.dataset.ytsRaisedStyle;
+		delete el.dataset.ytsRaisedOverComments;
+		delete el.dataset.ytsActionsRaised;
+		if (!raw) {
+			RAISED_RAIL_STYLE_KEYS.forEach((key) => el.style.removeProperty(key));
+			return;
+		}
+		try {
+			const saved = JSON.parse(raw);
+			for (const key of RAISED_RAIL_STYLE_KEYS) {
+				if (saved[key]) el.style.setProperty(key, saved[key]);
+				else el.style.removeProperty(key);
+			}
+		} catch (_) {
+			RAISED_RAIL_STYLE_KEYS.forEach((key) => el.style.removeProperty(key));
+		}
+	}
+
+	function getCommentsStackZ() {
+		let maxZ = 0;
+		const nodes = [
+			getOpenCommentsPanel(),
+			document.querySelector('#shorts-panel-container'),
+			document.querySelector('#anchored-panel'),
+			document.querySelector('#anchored-panel-scrim'),
+		];
+		for (const start of nodes) {
+			let n = start;
+			for (let i = 0; n && i < 12; i++) {
+				const zi = parseInt(getComputedStyle(n).zIndex, 10);
+				if (Number.isFinite(zi) && zi > maxZ) maxZ = zi;
+				if (n.id === 'content' || n.localName === 'ytd-app' || n === document.body) break;
+				n = n.parentElement;
+			}
+		}
+		return maxZ;
+	}
+
+	function getActionRailRaiseHost() {
+		const likeRow = findFallbackAnchorRow();
+		const bar = likeRow
+			? getReelActionBarFromNode(likeRow)
+			: findReelActionBar(getShortsReelUiScopeRoot());
+		if (!(bar instanceof HTMLElement)) return null;
+		return (
+			bar.closest('.ytReelPlayerOverlayViewModelActionsContainer') ||
+			bar.parentElement ||
+			bar
+		);
 	}
 
 	function clearRaisedActionRailStyles() {
+		document.querySelectorAll('[data-yts-raised-over-comments="1"]').forEach((el) => {
+			if (el instanceof HTMLElement) restoreRaisedRailStyles(el);
+		});
 		document.querySelectorAll('ytd-reel-player-overlay-renderer #actions').forEach((el) => {
 			if (!(el instanceof HTMLElement)) return;
-			el.style.removeProperty('position');
-			el.style.removeProperty('z-index');
-			el.style.removeProperty('isolation');
-			delete el.dataset.ytsActionsRaised;
+			if (el.dataset.ytsRaisedStyle) restoreRaisedRailStyles(el);
+			else {
+				el.style.removeProperty('position');
+				el.style.removeProperty('z-index');
+				el.style.removeProperty('isolation');
+				delete el.dataset.ytsActionsRaised;
+			}
 		});
+		restoreCommentsScrimPointerEvents();
 	}
 
 	function cleanupOrphanLiftSlots() {
@@ -1374,25 +3006,12 @@
 
 	function remountToolboxToCurrentShort() {
 		cleanupOrphanLiftSlots();
-		clearToolboxLiftStyles();
+		if (speedRootEl instanceof HTMLElement) delete speedRootEl.dataset.ytsCommentsLift;
 		clearRaisedActionRailStyles();
-		const likeRow = findFallbackAnchorRow();
-		if (speedRootEl && speedRootEl.isConnected && likeRow && likeRow.parentElement) {
-			lastAnchorFixAt = 0;
-			attachRootAtRow(speedRootEl, likeRow);
-			syncToolboxLayoutWithNative();
-			return true;
+		if (isLayoutSettling()) {
+			return toolboxIsOnCurrentShort();
 		}
-		if (speedRootEl && speedRootEl.isConnected && !isInReelActionUi(speedRootEl)) {
-			mutatingDom = true;
-			try {
-				speedRootEl.remove();
-			} finally {
-				mutatingDom = false;
-			}
-			speedRootEl = null;
-		}
-		return !!(speedRootEl && speedRootEl.isConnected);
+		return forceToolboxOntoCurrentShort();
 	}
 
 	function restoreToolboxFromCommentsLift() {
@@ -1407,40 +3026,566 @@
 		}
 	}
 
+	function raiseToolboxAboveComments() {
+		const root = speedRootEl;
+		if (!(root instanceof HTMLElement) || !root.isConnected) return;
+		if (root.parentElement !== document.body) {
+			document.body.appendChild(root);
+			root.dataset.ytsFixedHost = '1';
+		} else if (
+			isCommentsPanelOpen() &&
+			document.body.lastElementChild !== root
+		) {
+			document.body.appendChild(root);
+		}
+		root.style.setProperty('position', 'fixed', 'important');
+		root.style.setProperty('z-index', TOOLBOX_TOP_Z, 'important');
+		root.style.setProperty('pointer-events', 'auto', 'important');
+		const left = root.style.getPropertyValue('left');
+		const top = root.style.getPropertyValue('top');
+		const width = root.style.getPropertyValue('width');
+		const height = root.style.getPropertyValue('height');
+		if (isCommentsPanelOpen()) {
+			if (root.getAttribute('popover') !== 'manual') root.setAttribute('popover', 'manual');
+			try {
+				if (typeof root.showPopover === 'function' && !root.matches(':popover-open')) {
+					root.showPopover();
+				}
+			} catch (_) {
+				root.removeAttribute('popover');
+			}
+		} else if (root.hasAttribute('popover')) {
+			try {
+				if (typeof root.hidePopover === 'function' && root.matches(':popover-open')) {
+					root.hidePopover();
+				}
+			} catch (_) {}
+			root.removeAttribute('popover');
+		}
+		if (left) root.style.setProperty('left', left, 'important');
+		if (top) root.style.setProperty('top', top, 'important');
+		if (width) root.style.setProperty('width', width, 'important');
+		if (height) root.style.setProperty('height', height, 'important');
+		root.style.setProperty('position', 'fixed', 'important');
+		root.style.setProperty('z-index', TOOLBOX_TOP_Z, 'important');
+	}
+
+	function restoreCommentsScrimPointerEvents() {
+		const scrim = document.querySelector('#anchored-panel-scrim');
+		if (!(scrim instanceof HTMLElement)) return;
+		if (scrim.dataset.ytsScrimPassthrough === '1') {
+			scrim.style.removeProperty('pointer-events');
+			delete scrim.dataset.ytsScrimPassthrough;
+		}
+	}
+
 	function raiseActionRailAboveComments() {
-		return;
+		raiseToolboxAboveComments();
+		restoreCommentsScrimPointerEvents();
+	}
+
+	function syncCommentsOpenDocumentFlag() {
+		const open = isCommentsPanelOpen();
+		const was = document.documentElement.hasAttribute(COMMENTS_OPEN_ATTR);
+		if (open) {
+			document.documentElement.setAttribute(COMMENTS_OPEN_ATTR, '1');
+			raiseActionRailAboveComments();
+			if (Date.now() >= commentsUserDismissedUntil) commentsWantedOpen = true;
+		} else {
+			document.documentElement.removeAttribute(COMMENTS_OPEN_ATTR);
+			restoreCommentsScrimPointerEvents();
+		}
+		if (open !== was) {
+			startNativeAnchorFollow(560);
+			syncSpeedUiWithNativeLike();
+		}
 	}
 
 	function syncToolboxAboveComments() {
+		syncCommentsOpenDocumentFlag();
 		if (!speedRootEl || !speedRootEl.isConnected) return;
-		if (!isCommentsPanelOpen()) {
-			restoreToolboxFromCommentsLift();
-			return;
-		}
-
-		// 只做 fixed 浮層，不搬 DOM、不插占位，避免弄壞右側原生按鈕圖示
-		if (!isInReelActionUi(speedRootEl)) {
-			remountToolboxToCurrentShort();
-			if (!speedRootEl || !speedRootEl.isConnected) return;
-		}
-		const rect = speedRootEl.getBoundingClientRect();
-		if (rect.width <= 0 || rect.height <= 0) return;
-		speedRootEl.dataset.ytsCommentsLift = '1';
-		applyLiftedToolboxRect(rect);
+		applyToolboxPanelOpenState();
 	}
 
 	function closeCommentsPanelIfOpen() {
 		if (!isCommentsPanelOpen()) return;
 		const closeBtn = findCommentsPanelCloseButton();
 		if (closeBtn instanceof HTMLButtonElement) {
+			try {
 			closeBtn.click();
+			} catch (_) {}
 			return;
 		}
 		const toggleBtn = findCommentsToggleButton();
 		if (toggleBtn instanceof HTMLButtonElement) {
+			try {
 			toggleBtn.click();
+			} catch (_) {}
+		}
+	}
+
+	function openCommentsPanelForCurrentShort() {
+		if (isCommentsPanelOpen()) return true;
+		const toggleBtn = findCommentsToggleButton();
+		if (!(toggleBtn instanceof HTMLButtonElement)) return false;
+		try {
+			toggleBtn.click();
+		} catch (_) {
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * Keep comments open across auto-next and make sure they belong to the new
+	 * Short. YouTube normally reloads the open panel itself; we only step in
+	 * when the panel is still showing the previous video's comments (or got
+	 * closed) after the navigation settled.
+	 */
+	let pendingCommentsRefreshAfterAdvance = false;
+	let commentsSnapshotBeforeAdvance = '';
+	let commentsRefreshInProgress = false;
+	let commentsRefreshTimer = null;
+	let commentsFollowTimer = null;
+	let commentsFollowUntil = 0;
+	let commentsContentObserver = null;
+	let commentsContentObsRaf = 0;
+	let lastSettledCommentsSnapshot = '';
+	let lastSettledCommentsShortId = '';
+
+	function getOpenCommentsPanel() {
+		const preferred = document.querySelector(
+			'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-comments-section"]'
+		);
+		const panels = preferred
+			? [preferred, ...document.querySelectorAll('ytd-engagement-panel-section-list-renderer, ytd-comments-panel')]
+			: document.querySelectorAll('ytd-engagement-panel-section-list-renderer, ytd-comments-panel');
+		const seen = new Set();
+		for (const panel of panels) {
+			if (!(panel instanceof HTMLElement) || seen.has(panel)) continue;
+			seen.add(panel);
+			if (panel.hasAttribute('hidden')) continue;
+			const vis = panel.getAttribute('visibility');
+			if (vis && vis !== 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED') continue;
+			const hint = `${panel.getAttribute('target-id') || ''} ${panel.id || ''} ${
+				panel.getAttribute('panel-id') || ''
+			} ${panel.tagName}`;
+			if (!/comment/i.test(hint)) continue;
+			return panel;
+		}
+		return null;
+	}
+
+	function snapshotCommentsPanel() {
+		const panel = getOpenCommentsPanel();
+		if (!panel) return '';
+		const bound = getCommentsBoundVideoId(panel);
+		const header =
+			panel.querySelector('ytd-comments-header-renderer, ytd-engagement-panel-title-header-renderer');
+		const headerText = header ? (header.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+		const threads = panel.querySelectorAll('ytd-comment-thread-renderer');
+		const firstTexts = [];
+		for (let i = 0; i < Math.min(3, threads.length); i++) {
+			const body = threads[i].querySelector('#content-text, yt-attributed-string');
+			firstTexts.push(body ? (body.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80) : '');
+		}
+		return `${bound}|${headerText}|${threads.length}|${firstTexts.join('||')}`;
+	}
+
+	function commentsSnapshotLooksSettled(snap) {
+		if (!snap) return false;
+		const parts = String(snap).split('|');
+		const headerText = parts[1] || '';
+		const threadCount = Number(parts[2] || 0);
+		if (threadCount > 0) return true;
+		if (/還沒|尚無|沒有留言|no comments|be the first|成為第一|0\s*則/i.test(headerText)) {
+			return true;
+		}
+		return headerText.length > 4 && /\d/.test(headerText);
+	}
+
+	function commentsPanelIsLoading(panel) {
+		if (!(panel instanceof HTMLElement)) return false;
+		const spinner = panel.querySelector(
+			'#spinner, tp-yt-paper-spinner, yt-spinner, #continuations yt-icon'
+		);
+		if (!(spinner instanceof HTMLElement)) return false;
+		const cs = getComputedStyle(spinner);
+		if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+		const r = spinner.getBoundingClientRect();
+		return r.width > 2 && r.height > 2;
+	}
+
+	function collectCommentsReloadHosts(panel) {
+		const list = [];
+		const add = (el) => {
+			if (el instanceof HTMLElement && !list.includes(el)) list.push(el);
+		};
+		add(panel);
+		if (!(panel instanceof HTMLElement)) return list;
+		add(panel.querySelector('ytd-comments'));
+		add(panel.querySelector('ytd-comment-section-renderer'));
+		panel
+			.querySelectorAll('ytd-item-section-renderer[section-identifier="comment-item-section"]')
+			.forEach(add);
+		return list;
+	}
+
+	function readHostVideoId(el) {
+		if (!(el instanceof HTMLElement)) return '';
+		const attr = el.getAttribute('video-id') || '';
+		let prop = '';
+		try {
+			prop = el.videoId || '';
+		} catch (_) {}
+		let data = '';
+		try {
+			data = (el.__data && el.__data.videoId) || '';
+		} catch (_) {}
+		const vid = attr || prop || data || '';
+		return vid && vid !== 'undefined' ? String(vid) : '';
+	}
+
+	function getCommentsBoundVideoId(panel = getOpenCommentsPanel()) {
+		if (!(panel instanceof HTMLElement)) return '';
+		for (const el of collectCommentsReloadHosts(panel)) {
+			const vid = readHostVideoId(el);
+			if (vid) return vid;
+		}
+		return '';
+	}
+
+	function commentsMatchCurrentShort() {
+		const id = getCurrentShortId();
+		if (!id || id === 'short') return false;
+		if (!isCommentsPanelOpen()) return false;
+		const panel = getOpenCommentsPanel();
+		if (!(panel instanceof HTMLElement)) return false;
+		if (commentsPanelIsLoading(panel)) return false;
+		const bound = getCommentsBoundVideoId(panel);
+		if (bound && bound !== id) return false;
+		const snap = snapshotCommentsPanel();
+		if (commentsSnapshotBeforeAdvance) {
+			if (snap === commentsSnapshotBeforeAdvance) return false;
+			return commentsSnapshotLooksSettled(snap);
+		}
+		if (bound === id) return commentsSnapshotLooksSettled(snap);
+		return commentsSnapshotLooksSettled(snap);
+	}
+
+	function snapshotForPreviousShort(nextId) {
+		if (
+			lastSettledCommentsShortId &&
+			nextId &&
+			nextId !== 'short' &&
+			lastSettledCommentsShortId !== nextId &&
+			lastSettledCommentsSnapshot
+		) {
+			return lastSettledCommentsSnapshot;
+		}
+		return snapshotCommentsPanel();
+	}
+
+	function rememberSettledCommentsIfCurrent() {
+		if (pendingCommentsRefreshAfterAdvance) return;
+		if (!isCommentsPanelOpen()) return;
+		const id = getCurrentShortId();
+		if (!id || id === 'short') return;
+		const bound = getCommentsBoundVideoId();
+		if (bound && bound !== id) return;
+		const snap = snapshotCommentsPanel();
+		if (!commentsSnapshotLooksSettled(snap)) return;
+		lastSettledCommentsSnapshot = snap;
+		lastSettledCommentsShortId = id;
+	}
+
+	function finishCommentsFollow() {
+		pendingCommentsRefreshAfterAdvance = false;
+		commentsRefreshInProgress = false;
+		const snap = snapshotCommentsPanel();
+		commentsSnapshotBeforeAdvance = snap;
+		if (commentsSnapshotLooksSettled(snap)) {
+			lastSettledCommentsSnapshot = snap;
+			const id = getCurrentShortId();
+			if (id && id !== 'short') lastSettledCommentsShortId = id;
+		}
+		stopCommentsFollowLoop();
+	}
+
+	function stopCommentsFollowLoop() {
+		commentsFollowUntil = 0;
+		if (commentsFollowTimer) {
+			clearTimeout(commentsFollowTimer);
+			commentsFollowTimer = null;
+		}
+		if (commentsContentObsRaf) {
+			cancelAnimationFrame(commentsContentObsRaf);
+			commentsContentObsRaf = 0;
+		}
+		if (commentsContentObserver) commentsContentObserver.disconnect();
+	}
+
+	function ensureCommentsContentObserver() {
+		const panel = getOpenCommentsPanel();
+		if (!(panel instanceof HTMLElement)) return;
+		if (!commentsContentObserver) {
+			commentsContentObserver = new MutationObserver(() => {
+				if (!pendingCommentsRefreshAfterAdvance) return;
+				if (commentsContentObsRaf) return;
+				commentsContentObsRaf = requestAnimationFrame(() => {
+					commentsContentObsRaf = 0;
+					if (commentsMatchCurrentShort()) finishCommentsFollow();
+				});
+			});
+		}
+		try {
+			commentsContentObserver.disconnect();
+			commentsContentObserver.observe(panel, {
+				childList: true,
+				subtree: true,
+				characterData: true,
+			});
+				} catch (_) {}
+			}
+
+	function startCommentsFollowLoop() {
+		if (!pendingCommentsRefreshAfterAdvance) return;
+		commentsFollowUntil = Date.now() + 12000;
+		ensureCommentsContentObserver();
+		refreshCommentsPanelForCurrentShort();
+		if (commentsFollowTimer) return;
+		const step = () => {
+			commentsFollowTimer = null;
+			if (!pendingCommentsRefreshAfterAdvance) return;
+			refreshCommentsPanelForCurrentShort();
+			if (!pendingCommentsRefreshAfterAdvance) return;
+			if (Date.now() < commentsFollowUntil) {
+				ensureCommentsContentObserver();
+				commentsFollowTimer = setTimeout(step, 80);
+				return;
+			}
+			pendingCommentsRefreshAfterAdvance = false;
+			commentsRefreshInProgress = false;
+			stopCommentsFollowLoop();
+		};
+		commentsFollowTimer = setTimeout(step, 40);
+	}
+
+	function captureCommentsBeforeNavigate() {
+		if (isLayoutSettling() && resizePinnedShortId) return;
+		if (!(commentsWantedOpen || isCommentsPanelOpen())) return;
+		commentsWantedOpen = true;
+		commentsSnapshotBeforeAdvance = snapshotCommentsPanel() || lastSettledCommentsSnapshot;
+		pendingCommentsRefreshAfterAdvance = true;
+		commentsRefreshTries = 0;
+		commentsFollowUntil = 0;
+		startCommentsFollowLoop();
+	}
+
+	function markCommentsNeedFollow() {
+		if (isLayoutSettling()) return;
+		if (!(commentsWantedOpen || isCommentsPanelOpen())) return;
+		commentsWantedOpen = true;
+		pendingCommentsRefreshAfterAdvance = true;
+		const id = getCurrentShortId();
+		const prev = snapshotForPreviousShort(id);
+		if (prev) commentsSnapshotBeforeAdvance = prev;
+		else if (!commentsSnapshotBeforeAdvance) commentsSnapshotBeforeAdvance = snapshotCommentsPanel();
+		commentsRefreshTries = 0;
+		commentsFollowUntil = 0;
+		startCommentsFollowLoop();
+	}
+
+	function noteCurrentShortForComments() {
+		const id = getCurrentShortId();
+		if (!id || id === 'short') return;
+		if (lastCommentsFollowShortId && lastCommentsFollowShortId !== id) {
+			markCommentsNeedFollow();
+		} else {
+			rememberSettledCommentsIfCurrent();
+		}
+		lastCommentsFollowShortId = id;
+	}
+
+	function refreshCommentsPanelForCurrentShort() {
+		if (isLayoutSettling() && !isExplicitShortNav() && !isAutoAdvanceNavigation()) return;
+		if (!pendingCommentsRefreshAfterAdvance) return;
+		if (commentsRefreshInProgress) return;
+		if (autoAdvanceSourceShortId && getCurrentShortId() === autoAdvanceSourceShortId) return;
+
+		if (!isCommentsPanelOpen()) {
+			if (!commentsWantedOpen) {
+				finishCommentsFollow();
+				pendingCommentsRefreshAfterAdvance = false;
+				return;
+			}
+			if (!findCommentsToggleButton()) return;
+			commentsRefreshInProgress = true;
+			openCommentsPanelForCurrentShort();
+			if (commentsRefreshTimer) clearTimeout(commentsRefreshTimer);
+			commentsRefreshTimer = setTimeout(() => {
+				commentsRefreshTimer = null;
+				commentsRefreshInProgress = false;
+				if (commentsMatchCurrentShort()) {
+					finishCommentsFollow();
+					return;
+				}
+				retryCommentsFollow();
+			}, 120);
 			return;
 		}
+
+		if (commentsMatchCurrentShort()) {
+			finishCommentsFollow();
+			return;
+		}
+
+		commentsRefreshInProgress = true;
+		nudgeOpenCommentsReload();
+		if (commentsRefreshTimer) clearTimeout(commentsRefreshTimer);
+		commentsRefreshTimer = setTimeout(() => {
+			commentsRefreshTimer = null;
+			commentsRefreshInProgress = false;
+			if (commentsMatchCurrentShort()) {
+				finishCommentsFollow();
+				return;
+			}
+			retryCommentsFollow();
+		}, 140);
+	}
+
+	function retryCommentsFollow() {
+		commentsRefreshTries += 1;
+		if (commentsRefreshTries > 40) {
+			pendingCommentsRefreshAfterAdvance = false;
+			commentsRefreshInProgress = false;
+			stopCommentsFollowLoop();
+			return;
+		}
+		pendingCommentsRefreshAfterAdvance = true;
+		refreshCommentsPanelForCurrentShort();
+	}
+
+	function bindCommentsHostVideoId(el, id) {
+		if (!(el instanceof HTMLElement) || !id || id === 'short') return;
+		try {
+			el.setAttribute('video-id', id);
+			} catch (_) {}
+		try {
+			el.videoId = id;
+		} catch (_) {}
+		try {
+			if (typeof el.set === 'function') el.set('videoId', id);
+		} catch (_) {}
+		try {
+			if (el.__data) {
+				el.__data.videoId = id;
+				if (typeof el.notifyPath === 'function') el.notifyPath('videoId', id);
+			}
+		} catch (_) {}
+		try {
+			if (typeof el.requestUpdate === 'function') el.requestUpdate();
+		} catch (_) {}
+	}
+
+	function nudgeCommentsHost(el, id) {
+		if (!(el instanceof HTMLElement)) return;
+		bindCommentsHostVideoId(el, id);
+		try {
+			el.dispatchEvent(
+				new CustomEvent('yt-reload-continuation', { bubbles: true, composed: true })
+			);
+		} catch (_) {}
+		const methods = [
+			'reload',
+			'reset',
+			'loadComments',
+			'loadCommentSection',
+			'resetContinuation',
+		];
+		for (const name of methods) {
+			try {
+				if (typeof el[name] === 'function') el[name]();
+			} catch (_) {}
+		}
+	}
+
+	function nudgeOpenCommentsReload() {
+		const panel = getOpenCommentsPanel();
+		if (!(panel instanceof HTMLElement)) return;
+		const id = getCurrentShortId();
+		for (const host of collectCommentsReloadHosts(panel)) {
+			nudgeCommentsHost(host, id);
+		}
+	}
+
+	function toolboxIsOnCurrentShort() {
+		if (!(speedRootEl && speedRootEl.isConnected)) return false;
+		if (isToolboxOnBodyHost()) return isOnShortsPath();
+		if (!isInReelActionUi(speedRootEl)) return false;
+		const rootRenderer = speedRootEl.closest('ytd-reel-video-renderer');
+		if (rootRenderer && rendererMatchesCurrentShort(rootRenderer)) return true;
+		if (rootRenderer && isLikelyActiveReelRenderer(rootRenderer) && !hasUrlMatchedReelRenderer()) {
+			return true;
+		}
+		if (rootRenderer && document.querySelectorAll('ytd-reel-video-renderer').length === 1) {
+			return true;
+		}
+		return false;
+	}
+
+	function forceToolboxOntoCurrentShort() {
+		if (speedRootEl && speedRootEl.isConnected && isToolboxOnBodyHost(speedRootEl)) {
+			applyToolboxPanelOpenState();
+			syncToolboxLayoutWithNative();
+			return toolboxIsOnCurrentShort();
+		}
+		const likeRow = findFallbackAnchorRow();
+		if (!(likeRow instanceof HTMLElement) || !likeRow.parentElement) {
+			return ensureMounted() && toolboxIsOnCurrentShort();
+		}
+
+		if (speedRootEl && speedRootEl.isConnected) {
+			if (!isToolboxOnBodyHost(speedRootEl)) {
+				lastAnchorFixAt = 0;
+				attachRootAtRow(speedRootEl, likeRow);
+			}
+			applyToolboxPanelOpenState();
+			syncToolboxLayoutWithNative();
+			return toolboxIsOnCurrentShort();
+		}
+
+		return ensureMounted() && toolboxIsOnCurrentShort();
+	}
+
+	let postAdvanceRepairTimerIds = [];
+	function clearPostAdvanceRepairTimers() {
+		postAdvanceRepairTimerIds.forEach((id) => clearTimeout(id));
+		postAdvanceRepairTimerIds = [];
+	}
+
+	function schedulePostAdvanceRepair() {
+		clearPostAdvanceRepairTimers();
+		const delays = [80, 200, 400, 700, 1100, 1800, 2800];
+		delays.forEach((ms) => {
+			const id = setTimeout(() => {
+				// URL already changed — never keep blocking mount on the new short.
+				if (autoAdvanceSourceShortId && getCurrentShortId() !== autoAdvanceSourceShortId) {
+					autoAdvanceMountNotBefore = 0;
+				}
+				if (!toolboxIsOnCurrentShort()) forceToolboxOntoCurrentShort();
+				scheduleMountWork();
+				if (ms >= 200) refreshCommentsPanelForCurrentShort();
+				if (toolboxIsOnCurrentShort()) {
+					if (autoAdvanceSourceShortId && getCurrentShortId() !== autoAdvanceSourceShortId) {
+						autoAdvanceSourceShortId = '';
+						autoAdvancePendingUntil = 0;
+						autoAdvanceMountNotBefore = 0;
+					}
+				}
+			}, ms);
+			postAdvanceRepairTimerIds.push(id);
+		});
 	}
 
 	let commentTranslateMode = null;
@@ -1558,240 +3703,279 @@
 	}
 
 	function getNativeYouTubePlayerApi(videoEl = null) {
+		const isApi = (el) =>
+			el &&
+			typeof el.setVolume === 'function' &&
+			typeof el.getVolume === 'function';
 		if (videoEl instanceof HTMLVideoElement) {
-			const renderer = videoEl.closest('ytd-reel-video-renderer');
-			if (renderer instanceof HTMLElement) {
-				const scopedByVideo = renderer.querySelector('#movie_player');
-				if (
-					scopedByVideo &&
-					typeof scopedByVideo.setVolume === 'function' &&
-					typeof scopedByVideo.getVolume === 'function'
-				) {
-					return scopedByVideo;
-				}
+			const closestPlayer = videoEl.closest(
+				'.html5-video-player, #shorts-player, #movie_player'
+			);
+			if (isApi(closestPlayer)) return closestPlayer;
+			const host =
+				videoEl.closest('ytd-player, ytd-reel-video-renderer') || videoEl.parentElement;
+			if (host instanceof HTMLElement) {
+				const inner =
+					host.querySelector('#shorts-player') ||
+					host.querySelector('#movie_player') ||
+					host.querySelector('.html5-video-player');
+				if (isApi(inner)) return inner;
 			}
 		}
+		const shortsPlayer = document.querySelector('#shorts-player');
+		if (isApi(shortsPlayer)) return shortsPlayer;
 		const activeRenderer =
 			document.querySelector('ytd-reel-video-renderer[is-active]') ||
 			document.querySelector('ytd-reel-video-renderer[reel-active]') ||
 			document.querySelector("ytd-reel-video-renderer[aria-hidden='false']");
 		if (activeRenderer instanceof HTMLElement) {
-			const scoped = activeRenderer.querySelector('#movie_player');
-			if (
-				scoped &&
-				typeof scoped.setVolume === 'function' &&
-				typeof scoped.getVolume === 'function'
-			) {
-				return scoped;
-			}
+			const scoped =
+				activeRenderer.querySelector('#shorts-player') ||
+				activeRenderer.querySelector('#movie_player') ||
+				activeRenderer.querySelector('.html5-video-player');
+			if (isApi(scoped)) return scoped;
 		}
 		const direct = document.getElementById('movie_player');
-		if (
-			direct &&
-			typeof direct.setVolume === 'function' &&
-			typeof direct.getVolume === 'function'
-		) {
-			return direct;
-		}
-		const shortsPlayer = document.querySelector('#shorts-player #movie_player');
-		if (
-			shortsPlayer &&
-			typeof shortsPlayer.setVolume === 'function' &&
-			typeof shortsPlayer.getVolume === 'function'
-		) {
-			return shortsPlayer;
-		}
+		if (isApi(direct)) return direct;
 		return null;
 	}
 
-	function adjustVolumeBy(delta) {
-		const v = getActiveShortsVideo();
-		if (!(v instanceof HTMLVideoElement)) return false;
-		const nudgePlayerVolumeUi = (upward) => {
-			const key = upward ? 'ArrowUp' : 'ArrowDown';
-			const evtInit = {
-				key,
-				code: key,
-				bubbles: false,
-				cancelable: true,
-				composed: false,
-			};
-			const targets = [
-				getNativeYouTubePlayerApi(v),
-				querySelectorDeep('.html5-video-player'),
-				querySelectorDeep('#movie_player'),
-				v,
-			].filter((el) => el && typeof el.dispatchEvent === 'function');
-			for (const t of targets) {
-				try {
-					t.dispatchEvent(new KeyboardEvent('keydown', evtInit));
-					t.dispatchEvent(new KeyboardEvent('keyup', evtInit));
-				} catch (_) {}
-			}
-		};
-		const wakePlayerControls = () => {
-			const player =
-				querySelectorDeep('#movie_player') ||
-				querySelectorDeep('.html5-video-player') ||
-				querySelectorDeep('#shorts-player');
-			if (!(player instanceof HTMLElement)) return;
-			const r = player.getBoundingClientRect();
-			const x = r.left + Math.min(Math.max(12, r.width * 0.2), Math.max(12, r.width - 12));
-			const y = r.top + Math.min(Math.max(12, r.height * 0.85), Math.max(12, r.height - 12));
-			const evt = {
-				bubbles: true,
-				cancelable: true,
-				composed: true,
-				clientX: x,
-				clientY: y,
-			};
-			try {
-				player.dispatchEvent(new MouseEvent('mousemove', evt));
-			} catch (_) {}
-		};
+	function findShortsVolumeHost() {
+		return (
+			querySelectorDeep('ytd-shorts-player-controls-cow volume-controls') ||
+			querySelectorDeep('volume-controls.ytdVolumeControlsHost') ||
+			querySelectorDeep('volume-controls')
+		);
+	}
 
-		const syncAnyVolumeControls = (nextPct) => {
-			const pct = Math.max(0, Math.min(100, Math.round(nextPct)));
-			const selectors = [
-				'.ytp-volume-panel',
-				"input[type='range'][aria-label*='音量']",
-				"input[type='range'][aria-label*='Volume']",
-				"input[type='range'][name*='volume']",
-				"[aria-valuenow][aria-label*='音量']",
-				"[aria-valuenow][aria-label*='Volume']",
-			];
-			const all = [];
-			selectors.forEach((sel) => {
-				querySelectorAllDeep(sel).forEach((el) => {
-					if (el instanceof HTMLElement && !all.includes(el)) all.push(el);
-				});
-			});
-			all.forEach((el) => {
-				try {
-					if ('value' in el && (el.tagName === 'INPUT' || el.tagName === 'TP-YT-PAPER-SLIDER')) {
-						el.value = String(pct);
-					}
-				} catch (_) {}
-				try {
-					el.setAttribute('aria-valuenow', String(pct));
-					el.setAttribute('aria-valuetext', `${pct}%`);
-				} catch (_) {}
-				try {
-					el.dispatchEvent(new Event('input', { bubbles: true }));
-					el.dispatchEvent(new Event('change', { bubbles: true }));
-				} catch (_) {}
-			});
-		};
-
-		const simulateNativeVolumeSlider = (nextPct) => {
-			const pct = Math.max(0, Math.min(100, Math.round(nextPct)));
-			const slider =
-				querySelectorDeep('.ytp-volume-slider') || querySelectorDeep('.ytp-volume-area');
-			if (!(slider instanceof HTMLElement)) return;
-			const rect = slider.getBoundingClientRect();
-			if (!rect || rect.width <= 0 || rect.height <= 0) return;
-			const x = rect.left + (rect.width * pct) / 100;
-			const y = rect.top + rect.height / 2;
-			const common = {
-				bubbles: true,
-				cancelable: true,
-				composed: true,
-				clientX: x,
-				clientY: y,
-			};
-			try {
-				if (typeof PointerEvent === 'function') {
-					slider.dispatchEvent(new PointerEvent('pointerdown', common));
-					slider.dispatchEvent(new PointerEvent('pointermove', common));
-					slider.dispatchEvent(new PointerEvent('pointerup', common));
-				}
-			} catch (_) {}
-			try {
-				slider.dispatchEvent(new MouseEvent('mousedown', common));
-				slider.dispatchEvent(new MouseEvent('mousemove', common));
-				slider.dispatchEvent(new MouseEvent('mouseup', common));
-				slider.dispatchEvent(new MouseEvent('click', common));
-			} catch (_) {}
-		};
-
-		const syncNativeVolumeUi = (nextPct) => {
-			const pct = Math.max(0, Math.min(100, Math.round(nextPct)));
-			wakePlayerControls();
-			const panel = querySelectorDeep('.ytp-volume-panel');
-			const slider = querySelectorDeep('.ytp-volume-slider');
-			const sliderHandle = querySelectorDeep('.ytp-volume-slider-handle');
-			const sliderTrack = querySelectorDeep('.ytp-volume-slider-active');
-			const muteBtn = querySelectorDeep('.ytp-mute-button');
-			const muted = pct <= 0;
-			if (panel instanceof HTMLElement) {
-				panel.setAttribute('aria-valuenow', String(pct));
-				panel.setAttribute('aria-valuetext', `${pct}%`);
-				panel.setAttribute('aria-label', muted ? '解除靜音' : `音量 ${pct}%`);
-				panel.dispatchEvent(new Event('input', { bubbles: true }));
-				panel.dispatchEvent(new Event('change', { bubbles: true }));
-			}
-			if (muteBtn instanceof HTMLElement) {
-				muteBtn.setAttribute('aria-label', muted ? '解除靜音' : '靜音');
-			}
-			if (slider instanceof HTMLElement)
-				slider.style.setProperty('--ytp-volume-ratio', String(pct / 100));
-			if (sliderHandle instanceof HTMLElement) {
-				sliderHandle.style.left = `${pct}%`;
-				sliderHandle.dispatchEvent(new Event('input', { bubbles: true }));
-				sliderHandle.dispatchEvent(new Event('change', { bubbles: true }));
-			}
-			if (sliderTrack instanceof HTMLElement) {
-				sliderTrack.style.transform = `scaleX(${pct / 100})`;
-				sliderTrack.style.transformOrigin = 'left center';
-				sliderTrack.style.width = `${pct}%`;
-			}
-			simulateNativeVolumeSlider(pct);
-			syncAnyVolumeControls(pct);
-		};
-
-		const api = getNativeYouTubePlayerApi(v);
-		if (api) {
-			const curPct = Number(api.getVolume());
-			const basePct = Number.isFinite(curPct) ? curPct : Math.round((v.volume || 0) * 100);
-			const nextPct = Math.max(0, Math.min(100, basePct + Math.round(delta * 100)));
-			try {
-				api.setVolume(nextPct);
-				if (nextPct > 0 && typeof api.isMuted === 'function' && api.isMuted()) {
-					if (typeof api.unMute === 'function') api.unMute();
-				}
-				if (typeof api.setMuted === 'function' && nextPct > 0) api.setMuted(false);
-			} catch (_) {}
-			try {
-				v.volume = Number((nextPct / 100).toFixed(2));
-				v.muted = nextPct <= 0;
-				v.dispatchEvent(new Event('volumechange', { bubbles: true }));
-				document.dispatchEvent(new Event('volumechange', { bubbles: true }));
-				syncNativeVolumeUi(nextPct);
-				nudgePlayerVolumeUi(delta > 0);
-			} catch (_) {}
+	function canFocusNativeVolumeSlider() {
+		const ae = document.activeElement;
+		if (!(ae instanceof HTMLElement)) return true;
+		if (ae.id === 'volume-input' || ae.classList.contains('ytdVolumeControlsNativeSlider')) {
 			return true;
 		}
-		const next = Math.max(0, Math.min(1, (Number(v.volume) || 0) + delta));
-		const nextPct = Math.round(next * 100);
-		try {
-			v.volume = Number(next.toFixed(2));
-			v.muted = nextPct <= 0;
-			v.dispatchEvent(new Event('volumechange', { bubbles: true }));
-			document.dispatchEvent(new Event('volumechange', { bubbles: true }));
-			syncNativeVolumeUi(nextPct);
-			nudgePlayerVolumeUi(delta > 0);
-		} catch (_) {}
+		if (ae.closest('ytd-comment-simplebox-renderer, ytd-commentbox, ytd-engagement-panel-section-list-renderer')) {
+			if (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable) return false;
+		}
+		const tag = ae.tagName;
+		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return false;
+		if (ae.isContentEditable) return false;
 		return true;
+	}
+
+	function applyNativeVolumeSliderValue(host, pct) {
+		if (!(host instanceof HTMLElement)) return null;
+		const input = host.querySelector('#volume-input, .ytdVolumeControlsNativeSlider');
+		if (!(input instanceof HTMLElement)) return null;
+		try {
+			if ('value' in input) input.value = String(pct);
+				} catch (_) {}
+				try {
+			input.setAttribute('aria-valuenow', String(pct));
+			input.setAttribute('aria-valuetext', `${pct}%`);
+			input.style.setProperty('--gradient-percent', `${pct}%`);
+				} catch (_) {}
+		return input;
+	}
+
+	function addNativeVolumeExpandedClasses(host) {
+		if (!(host instanceof HTMLElement)) return;
+		host
+			.querySelector('.ytdVolumeControlsVolumeControlsContainer')
+			?.classList.add('ytdVolumeControlsVolumeControlsContainerExpanded');
+		host
+			.querySelector('.ytdVolumeControlsSliderContainer')
+			?.classList.add('ytdVolumeControlsSliderContainerExpanded');
+		host
+			.querySelector('.ytdVolumeControlsBackgroundScrim')
+			?.classList.add('ytdVolumeControlsBackgroundScrimExpanded');
+	}
+
+	function removeNativeVolumeExpandedClasses(host) {
+		if (!(host instanceof HTMLElement)) return;
+		host
+			.querySelector('.ytdVolumeControlsVolumeControlsContainer')
+			?.classList.remove('ytdVolumeControlsVolumeControlsContainerExpanded');
+		host
+			.querySelector('.ytdVolumeControlsSliderContainer')
+			?.classList.remove('ytdVolumeControlsSliderContainerExpanded');
+		host
+			.querySelector('.ytdVolumeControlsBackgroundScrim')
+			?.classList.remove(
+				'ytdVolumeControlsBackgroundScrimExpanded',
+				'ytdVolumeControlsBackgroundScrimExpandedHoverState'
+			);
+	}
+
+	function paintShortsVolumeHoverUi() {
+		const host = findShortsVolumeHost();
+		if (!(host instanceof HTMLElement)) return;
+		volumeHoverHostEl = host;
+		addNativeVolumeExpandedClasses(host);
+		const input = host.querySelector('#volume-input, .ytdVolumeControlsNativeSlider');
+		if (input instanceof HTMLInputElement && canFocusNativeVolumeSlider()) {
+			try {
+				if (document.activeElement !== input) input.focus({ preventScroll: true });
+				volumeHoverFocusedEl = input;
+			} catch (_) {}
+		}
+	}
+
+	function stopVolumeHoverPersist() {
+		volumeHoverUntil = 0;
+		if (volumeHoverHideTimer) {
+			clearTimeout(volumeHoverHideTimer);
+			volumeHoverHideTimer = null;
+		}
+		if (volumeHoverPaintTimer) {
+			clearTimeout(volumeHoverPaintTimer);
+			volumeHoverPaintTimer = null;
+		}
+	}
+
+	function hideNativeVolumeHoverUi() {
+		stopVolumeHoverPersist();
+		if (volumeHoverFocusedEl instanceof HTMLElement && document.activeElement === volumeHoverFocusedEl) {
+			try {
+				volumeHoverFocusedEl.blur();
+			} catch (_) {}
+		}
+		volumeHoverFocusedEl = null;
+		const host = volumeHoverHostEl;
+		volumeHoverHostEl = null;
+		if (host instanceof HTMLElement) removeNativeVolumeExpandedClasses(host);
+		document.querySelectorAll('volume-controls, .ytdVolumeControlsHost').forEach((el) => {
+			if (el instanceof HTMLElement) removeNativeVolumeExpandedClasses(el);
+		});
+	}
+
+	function clampVolumePct(n) {
+		const v = Number(n);
+		if (!Number.isFinite(v)) return null;
+		return Math.max(0, Math.min(100, Math.round(v)));
+	}
+
+	function findNativeVolumeSlider() {
+		const host = findShortsVolumeHost();
+		if (!(host instanceof HTMLElement)) return null;
+		const input = host.querySelector('#volume-input, .ytdVolumeControlsNativeSlider');
+		return input instanceof HTMLInputElement ? input : null;
+	}
+
+	function readNativeVolumePct() {
+		const input = findNativeVolumeSlider();
+		if (input) {
+			const n = clampVolumePct(input.value);
+			if (n !== null) return n;
+		}
+		const api = getNativeYouTubePlayerApi(getActiveShortsVideo());
+		try {
+			if (api && typeof api.getVolume === 'function') {
+				const n = Number(api.getVolume());
+				if (Number.isFinite(n)) return clampVolumePct(n);
+			}
+		} catch (_) {}
+		return null;
+	}
+
+	function commitNativeVolumePct(pct) {
+		const n = clampVolumePct(pct);
+		if (n === null) return false;
+		const input = findNativeVolumeSlider();
+		if (input) {
+			try {
+				const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+				if (desc && typeof desc.set === 'function') desc.set.call(input, String(n));
+				else input.value = String(n);
+			} catch (_) {
+				try {
+					input.value = String(n);
+				} catch (_) {}
+			}
+			try {
+				input.setAttribute('aria-valuenow', String(n));
+				input.setAttribute('aria-valuetext', `${n}% volume`);
+				input.style.setProperty('--gradient-percent', `${n}%`);
+			} catch (_) {}
+			try {
+				input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+				input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+			} catch (_) {}
+			showNativeVolumeHoverUi(n);
+			return true;
+		}
+		const api = getNativeYouTubePlayerApi(getActiveShortsVideo());
+		if (api && typeof api.setVolume === 'function') {
+			try {
+				api.setVolume(n);
+				if (n > 0 && typeof api.isMuted === 'function' && api.isMuted() && typeof api.unMute === 'function') {
+					api.unMute();
+				}
+		} catch (_) {}
+			showNativeVolumeHoverUi(n);
+		return true;
+		}
+		return false;
+	}
+
+	function showNativeVolumeHoverUi(nextPct) {
+		if (Number.isFinite(nextPct)) {
+			volumeHoverPct = Math.max(0, Math.min(100, Math.round(nextPct)));
+		}
+		volumeHoverUntil = Date.now() + 2500;
+		paintShortsVolumeHoverUi();
+		if (!volumeHoverPaintTimer) {
+			const tick = () => {
+				volumeHoverPaintTimer = null;
+				if (Date.now() >= volumeHoverUntil) {
+					hideNativeVolumeHoverUi();
+					return;
+				}
+				paintShortsVolumeHoverUi();
+				volumeHoverPaintTimer = setTimeout(tick, 200);
+			};
+			volumeHoverPaintTimer = setTimeout(tick, 50);
+		}
+		if (volumeHoverHideTimer) clearTimeout(volumeHoverHideTimer);
+		volumeHoverHideTimer = setTimeout(() => {
+			volumeHoverHideTimer = null;
+			if (Date.now() >= volumeHoverUntil) hideNativeVolumeHoverUi();
+		}, 2500);
+	}
+
+	function adjustVolumeBy(deltaPercent) {
+		const step = Number(deltaPercent);
+		if (!Number.isFinite(step) || step === 0) return false;
+		const start = readNativeVolumePct();
+		if (start === null) return false;
+		return commitNativeVolumePct(Math.max(0, Math.min(100, start + step)));
 	}
 
 	function onDocumentKeydown(e) {
 		if (!(e instanceof KeyboardEvent)) return;
 		const k = e.key;
-		if (k === 'ArrowUp' || k === 'ArrowDown') {
+		if (k === 'Escape' && isCommentsPanelOpen()) {
+			noteCommentsDismissedByUser();
+		}
+		if (
+			k === 'ArrowUp' ||
+			k === 'ArrowDown' ||
+			k === 'MediaTrackNext' ||
+			k === 'MediaTrackPrevious'
+		) {
+			if (
+				(k === 'ArrowUp' || k === 'ArrowDown') &&
+				(eventTouchesCommentsUi(e) || isTypingTarget(e.target))
+			) {
+				return;
+			}
+			noteExplicitShortNav();
 			noteManualShortNavigation();
 		}
 		if (leftRightVolumeEnabled && (k === 'ArrowLeft' || k === 'ArrowRight')) {
-			const delta = k === 'ArrowRight' ? 0.05 : -0.05;
+			// Browsers emit repeat keydown events while held, so both a tap and a
+			// held key use the exact same 5% step.
+			const delta = k === 'ArrowRight' ? VOLUME_STEP_PERCENT : -VOLUME_STEP_PERCENT;
 			if (!adjustVolumeBy(delta)) return;
 			e.preventDefault();
 			if (typeof e.stopImmediatePropagation === 'function') {
@@ -1802,42 +3986,155 @@
 		}
 	}
 
+	function isShortsNavControl(el) {
+		if (!(el instanceof Element)) return false;
+		if (el.closest(`#${ROOT_ID}`)) return false;
+		if (isInsideCommentsPanel(el)) return false;
+		return !!el.closest('#navigation-button-down, #navigation-button-up');
+	}
+
 	function onManualShortNavGesture(e) {
 		if (!e) return;
 		if (e.type === 'wheel') {
+			if (isBrowserZoomWheel(e)) return;
 			if (Math.abs(e.deltaY || 0) < 8) return;
+			if (Math.abs(e.deltaX || 0) > Math.abs(e.deltaY || 0)) return;
+			if (eventTouchesCommentsUi(e)) {
+				if (urlLockShortId) enforceUrlLock();
+				return;
+			}
+			if (!eventTouchesShortsFeedNav(e)) return;
+			noteExplicitShortNav();
 			noteManualShortNavigation();
 			return;
 		}
-		if (e.type === 'pointerdown' || e.type === 'touchstart') {
+		if (e.type === 'click' || e.type === 'pointerdown') {
 			const t = e.target;
 			if (!(t instanceof Element)) return;
-			if (t.closest(`#${ROOT_ID}`)) return;
-			if (t.closest('#navigation-button-down, #navigation-button-up')) {
+			if (isShortsNavControl(t)) {
+				noteExplicitShortNav();
 				noteManualShortNavigation();
 			}
 		}
 	}
 
+	function onExplicitShortNavSignal() {
+		noteExplicitShortNav();
+		noteManualShortNavigation();
+	}
+
+	function onYtNavigateStart() {
+		syncWindowSnapLock();
+		if (!isExplicitShortNav()) {
+			enforceUrlLock();
+			return;
+		}
+		abortResizeLockForUserNav();
+		captureCommentsBeforeNavigate();
+		rememberLiveShortPin(true);
+	}
+
 	function onShortNavigateFinish() {
+		syncWindowSnapLock();
+		if (!isExplicitShortNav()) {
+			enforceUrlLock();
+			startNativeAnchorFollow(720);
+			return;
+		}
+		abortResizeLockForUserNav();
+		commitUrlLockFromLocation();
+		rememberLiveShortPin(true);
+		noteCurrentShortForComments();
+		startNativeAnchorFollow(720);
 		startBootstrapRetries();
 		if (!isAutoAdvanceNavigation()) {
 			noteManualShortNavigation();
+		} else {
+			autoAdvanceMountNotBefore = 0;
+			schedulePostAdvanceRepair();
+			scheduleMountWork();
+		}
+		if (pendingCommentsRefreshAfterAdvance || commentsWantedOpen || isCommentsPanelOpen()) {
+			if (commentsWantedOpen || isCommentsPanelOpen()) {
+				commentsWantedOpen = true;
+				pendingCommentsRefreshAfterAdvance = true;
+				if (!commentsSnapshotBeforeAdvance) {
+					commentsSnapshotBeforeAdvance = snapshotForPreviousShort(getCurrentShortId());
+				}
+			}
+			schedulePostAdvanceRepair();
+			startCommentsFollowLoop();
+			refreshCommentsPanelForCurrentShort();
 		}
 		syncPlayThroughShortId();
 	}
 
+	function onYtPageDataUpdated() {
+		if (!isExplicitShortNav()) {
+			enforceUrlLock();
+			return;
+		}
+		noteCurrentShortForComments();
+		if (pendingCommentsRefreshAfterAdvance) {
+			startCommentsFollowLoop();
+			refreshCommentsPanelForCurrentShort();
+			return;
+		}
+		rememberSettledCommentsIfCurrent();
+	}
+
 	function togglePanel() {
-		if (!speedRootEl) return;
-		const nextOpen = speedRootEl.dataset.open === '1' ? '0' : '1';
-		if (nextOpen === '1') closeCommentsPanelIfOpen();
-		speedRootEl.dataset.open = nextOpen;
+		toolboxPanelWantedOpen = !toolboxPanelWantedOpen;
+		applyToolboxPanelOpenState();
+		syncToolboxAboveComments();
+	}
+
+	function restorePinnedShortAfterResize() {
+		const pin = urlLockShortId || resizePinnedShortId;
+		const host = findPinnedSequenceHost(pin);
+		if (host instanceof HTMLElement) centerShortsHostInScroller(host);
+		if (!pin || pin === 'short' || getCurrentShortId() === pin) return;
+		if (restorePinnedRetryTimer) return;
+		restorePinnedRetryTimer = setTimeout(() => {
+			restorePinnedRetryTimer = null;
+			const again = findPinnedSequenceHost(pin);
+			if (again instanceof HTMLElement) centerShortsHostInScroller(again);
+			resumePinnedShortMedia(again, pin);
+			scheduleMountWork();
+		}, 160);
+	}
+
+	function onWindowLayoutSettle() {
+		syncWindowSnapLock();
+	}
+
+	function onDocumentScrollForToolbox() {
+		syncWindowSnapLock();
+		if (!isExplicitShortNav() && urlLockShortId) {
+			enforceUrlLock();
+			if (!(speedRootEl && speedRootEl.isConnected)) return;
+			syncToolboxLayoutWithNative();
+			return;
+		}
+		rememberLiveShortPin();
+		if (!(speedRootEl && speedRootEl.isConnected)) return;
+		syncToolboxLayoutWithNative();
 	}
 
 	document.addEventListener('click', onDocumentClick, true);
+	document.addEventListener('click', onCommentsUiPointer, true);
+	document.addEventListener('click', onManualShortNavGesture, true);
+	document.addEventListener('pointerdown', onCommentsUiPointer, true);
+	document.addEventListener('bm-youtube-explicit-short-nav', onExplicitShortNavSignal, true);
 	document.addEventListener('keydown', onDocumentKeydown, true);
 	document.addEventListener('wheel', onManualShortNavGesture, { capture: true, passive: true });
 	document.addEventListener('pointerdown', onManualShortNavGesture, true);
+	document.addEventListener('scroll', onDocumentScrollForToolbox, { capture: true, passive: true });
+	window.addEventListener('resize', onWindowLayoutSettle, { capture: true, passive: true });
+	window.addEventListener('orientationchange', onWindowLayoutSettle, { capture: true, passive: true });
+	if (window.visualViewport) {
+		window.visualViewport.addEventListener('resize', onWindowLayoutSettle, { capture: true, passive: true });
+	}
 	runtimeMsgHandler = (msg) => {
 		if (!msg || !msg.type) return;
 		if (msg.type === 'BM_BG_RECORD_DONE') {
@@ -1880,6 +4177,12 @@
 	chrome.runtime.onMessage.addListener(runtimeMsgHandler);
 
 	function getActiveShortsVideo() {
+		const preferred = getPreferredActiveReelRenderer();
+		if (preferred instanceof HTMLElement) {
+			const preferredVideo = preferred.querySelector('video');
+			if (preferredVideo instanceof HTMLVideoElement) return preferredVideo;
+		}
+
 		const activeRendererVideo =
 			document.querySelector('ytd-reel-video-renderer[is-active] video') ||
 			document.querySelector('ytd-reel-video-renderer[reel-active] video') ||
@@ -1903,6 +4206,7 @@
 		let bestScore = -1;
 		const vw = window.innerWidth;
 		const vh = window.innerHeight;
+		const urlId = getCurrentShortId();
 		for (const v of candidates) {
 			const r = v.getBoundingClientRect();
 			const iw = Math.min(r.right, vw) - Math.max(r.left, 0);
@@ -1918,6 +4222,9 @@
 			if (renderer instanceof HTMLElement) {
 				if (renderer.hasAttribute('is-active') || renderer.hasAttribute('reel-active')) {
 					score *= 2.2;
+				}
+				if (urlId && urlId !== 'short' && rendererMatchesCurrentShort(renderer)) {
+					score *= 3;
 				}
 			}
 			if (!v.paused && !v.ended && v.readyState >= 2) score *= 1.45;
@@ -1978,7 +4285,11 @@
 					renderer.dataset.videoId ||
 					''
 				: '';
-		const src = v instanceof HTMLVideoElement ? v.currentSrc || v.src || '' : '';
+		// Only fall back to the media src when the URL carries no short id.
+		// The src changes on quality switches, which used to reset the play count
+		// and trigger a needless remount mid-video.
+		const src =
+			id === 'short' && v instanceof HTMLVideoElement ? v.currentSrc || v.src || '' : '';
 		return `${id}|${rid}|${src}`;
 	}
 
@@ -2000,11 +4311,42 @@
 		return Date.now() < autoAdvancePendingUntil || Date.now() - lastAdvanceToNextAt < 1200;
 	}
 
+	function shouldDeferAutoAdvanceMount() {
+		if (!autoAdvanceSourceShortId) return false;
+		const currentShortId = getCurrentShortId();
+		// Only defer while we are still on the pre-advance Short (avoid mounting
+		// onto a reel that is about to unmount). Once the URL changes, mount ASAP.
+		if (currentShortId === autoAdvanceSourceShortId) {
+			return Date.now() < autoAdvancePendingUntil;
+		}
+		return false;
+	}
+
+	function scheduleDeferredAutoAdvanceMount() {
+		if (!autoAdvanceSourceShortId || autoAdvanceMountTimer) return;
+		const currentShortId = getCurrentShortId();
+		const targetAt =
+			currentShortId === autoAdvanceSourceShortId
+				? autoAdvancePendingUntil
+				: autoAdvanceMountNotBefore;
+		const delay = Math.max(50, targetAt - Date.now());
+		autoAdvanceMountTimer = setTimeout(() => {
+			autoAdvanceMountTimer = null;
+			scheduleMountWork();
+		}, delay);
+	}
+
 	function noteManualShortNavigation() {
 		if (isAutoAdvanceNavigation()) return;
+		noteExplicitShortNav();
 		playThroughCount = 0;
 		lastPlayCompletionAt = 0;
 		clearActiveVideoPlayCursor();
+		const now = getCurrentShortId();
+		if (now && now !== 'short' && now !== urlLockShortId) {
+			rememberLiveShortPin(true);
+			noteCurrentShortForComments();
+		}
 		const id = getActiveShortKey();
 		if (id !== playThroughShortId) {
 			playThroughShortId = id;
@@ -2013,24 +4355,61 @@
 	}
 
 	function syncPlayThroughShortId() {
+		if (!isExplicitShortNav() && urlLockShortId && getCurrentShortId() !== urlLockShortId) {
+			enforceUrlLock();
+			return;
+		}
+		if (isLayoutSettling() && !isExplicitShortNav()) return;
+		if (shouldDeferAutoAdvanceMount()) {
+			scheduleDeferredAutoAdvanceMount();
+			return;
+		}
 		const id = getActiveShortKey();
 		if (id === playThroughShortId) return;
+		const prevUrl = String(playThroughShortId || '').split('|')[0];
+		const nextUrl = getCurrentShortId();
 		const wasAuto = isAutoAdvanceNavigation();
 		resetPlayThroughState(id);
 		if (!wasAuto) {
 			playThroughCount = 0;
 			lastPlayCompletionAt = 0;
 		}
+		const urlChanged = prevUrl !== nextUrl;
+		if (urlChanged) noteCurrentShortForComments();
+		if (
+			!urlChanged &&
+			speedRootEl &&
+			speedRootEl.isConnected &&
+			isInReelActionUi(speedRootEl)
+		) {
+			return;
+		}
 		remountToolboxToCurrentShort();
 	}
 
 	function goToNextShort() {
+		applyWindowSizeChange();
+		if (isResizeHoldRunning() && !isExplicitShortNav()) return;
 		const now = Date.now();
 		if (now - lastAdvanceToNextAt < 900) return;
 		lastAdvanceToNextAt = now;
-		autoAdvancePendingUntil = now + 1600;
-		remountToolboxToCurrentShort();
+		autoAdvancePendingUntil = now + 2500;
+		autoAdvanceSourceShortId = getCurrentShortId();
+		autoAdvanceMountNotBefore = now + 120;
+		// Remember open comments so we can reload them for the next Short (not leave them closed).
+		pendingCommentsRefreshAfterAdvance = commentsWantedOpen || isCommentsPanelOpen();
+		if (pendingCommentsRefreshAfterAdvance) commentsWantedOpen = true;
+		commentsSnapshotBeforeAdvance = pendingCommentsRefreshAfterAdvance
+			? snapshotCommentsPanel() || lastSettledCommentsSnapshot
+			: '';
+		commentsRefreshTries = 0;
+		commentsRefreshInProgress = false;
+		if (pendingCommentsRefreshAfterAdvance) {
+			commentsFollowUntil = 0;
+			startCommentsFollowLoop();
+		}
 		lastAnchorFixAt = 0;
+		schedulePostAdvanceRepair();
 
 		const btn =
 			document.querySelector('#navigation-button-down button') ||
@@ -2051,25 +4430,32 @@
 			bubbles: true,
 			cancelable: true,
 		};
-		const targets = [
-			document.activeElement,
-			querySelectorDeep('#shorts-player'),
-			querySelectorDeep('#movie_player'),
-			document.body,
-			document.documentElement,
-		].filter((el) => el && typeof el.dispatchEvent === 'function');
-		for (const target of targets) {
-			try {
-				target.dispatchEvent(new KeyboardEvent('keydown', evtInit));
-				target.dispatchEvent(new KeyboardEvent('keyup', evtInit));
-			} catch (_) {}
-		}
+		// Dispatch exactly once. Every dispatch bubbles to document, so firing on
+		// several targets made YouTube skip several Shorts at a time.
+		const target =
+			querySelectorDeep('#shorts-player') ||
+			document.activeElement ||
+			document.body ||
+			document.documentElement;
+		if (!target || typeof target.dispatchEvent !== 'function') return;
+		try {
+			target.dispatchEvent(new KeyboardEvent('keydown', evtInit));
+			target.dispatchEvent(new KeyboardEvent('keyup', evtInit));
+		} catch (_) {}
 	}
 
 	function onShortPlayCompleted() {
+		applyWindowSizeChange();
+		if (isResizeHoldRunning() && !isExplicitShortNav()) return;
+		if (isLayoutSettling() && !isExplicitShortNav()) return;
 		if (!autoNextEnabled) return;
 		if (framePlaybackEnabled || recordingSession || manualRecordSession || suspendSpeedSync) return;
-		syncPlayThroughShortId();
+		const id = getCurrentShortId();
+		const countKey = id && id !== 'short' ? id : getActiveShortKey();
+		if (countKey !== playThroughShortId) {
+			playThroughShortId = countKey;
+			playThroughCount = 0;
+		}
 		const now = Date.now();
 		if (now - lastPlayCompletionAt < 500) return;
 		lastPlayCompletionAt = now;
@@ -2081,6 +4467,10 @@
 
 	function onHookedVideoTimeUpdate(v) {
 		if (!(v instanceof HTMLVideoElement)) return;
+		if (isLayoutSettling()) {
+			v.dataset.bmPrevPlayTime = String(Number(v.currentTime) || 0);
+			return;
+		}
 		const active = getActiveShortsVideo();
 		if (active && active !== v) return;
 		const dur = Number(v.duration);
@@ -2942,13 +5332,23 @@
 
 	function ensureMounted() {
 		if (speedRootEl && speedRootEl.isConnected) return true;
-		const anchorRow = findFallbackAnchorRow();
-		if (!anchorRow || !anchorRow.parentElement) return false;
+		if (!isOnShortsPath()) return false;
+		const likeBtn = findVisibleNativeLikeButton();
+		const anchorRow =
+			(likeBtn && findActionRowElement(likeBtn)) ||
+			findFallbackAnchorRow();
+		if (!likeBtn && (!anchorRow || !anchorRow.parentElement)) return false;
 
 		const root = document.createElement('div');
 		root.id = ROOT_ID;
-		root.setAttribute('data-open', '0');
+		root.setAttribute('data-open', toolboxPanelWantedOpen ? '1' : '0');
+		root.dataset.ytsFixedHost = '1';
+		root.dataset.bmYtsRole = TOOLBOX_ROLE;
 		root.toggleAttribute('data-expand-up', !panelExpandRightEnabled);
+		root.style.visibility = 'hidden';
+		root.style.setProperty('position', 'fixed', 'important');
+		root.style.setProperty('left', '-9999px', 'important');
+		root.style.setProperty('top', '-9999px', 'important');
 
 		const mainItem = document.createElement('div');
 		mainItem.className = 'yts-tool-item yts-tool-item-main';
@@ -3083,16 +5483,22 @@
 		root.appendChild(mainItem);
 		root.appendChild(panel);
 
-		attachRootAtRow(root, anchorRow);
+		if (!attachRootAtRow(root, anchorRow || document.body) || !root.isConnected) {
+			// Anchor vanished between lookup and insert; try again on the next pass
+			// instead of holding a detached root that blocks future mounts.
+			return false;
+		}
 
 		const rn = root.getRootNode();
 		speedRootEl = root;
+		applyToolboxPanelOpenState(root);
 		downloadBtnEl = downloadBtn;
 		downloadPercentEl = recordPercent;
 		recordBtnEl = recordBtn;
 		updateFramePlaybackUi();
 		updateSpeedUiLockedState();
 		ensureStylesInShadowRoot(rn);
+		syncToolboxLayoutWithNative();
 		syncSpeedUiWithNativeLike();
 		applyToAllLikelyVideos();
 		return true;
@@ -3103,7 +5509,12 @@
 		all.forEach((el) => {
 			if (!(el instanceof HTMLElement)) return;
 			if (el === speedRootEl) return;
+			if (el.dataset.bmYtsRole === TOOLBOX_ROLE) return;
 			if (el.querySelector('.yts-toolbox-panel')) return;
+			if (el.dataset.bmYtsRole === SPEED3X_ROLE) {
+				el.remove();
+				return;
+			}
 			el.remove();
 		});
 	}
@@ -3128,6 +5539,7 @@
 		v.addEventListener('loadedmetadata', scheduleReapply);
 		v.addEventListener('playing', scheduleReapply);
 		v.addEventListener('timeupdate', () => onHookedVideoTimeUpdate(v));
+		v.addEventListener('seeked', () => onHookedVideoTimeUpdate(v));
 		v.addEventListener('ended', () => {
 			const active = getActiveShortsVideo();
 			if (active && active !== v) return;
@@ -3181,7 +5593,9 @@
 		if (t.closest('#' + ROOT_ID)) return false;
 		if (isInsideCommentsPanel(t)) return false;
 		if (
-			t.closest('#actions, ytd-reel-player-overlay-renderer #actions, reel-action-bar-item-view-model')
+			t.closest(
+				'#actions, ytd-reel-player-overlay-renderer #actions, reel-action-bar-view-model, reel-action-bar-item-view-model, .ytReelPlayerOverlayViewModelActionsContainer'
+			)
 		)
 			return false;
 
@@ -3192,7 +5606,9 @@
 		const r = v.getBoundingClientRect();
 		if (x < r.left || x > r.right || y < r.top || y > r.bottom) return false;
 
-		const actions = document.querySelector('ytd-reel-player-overlay-renderer #actions');
+		const actions =
+			document.querySelector('ytd-reel-player-overlay-renderer reel-action-bar-view-model') ||
+			document.querySelector('ytd-reel-player-overlay-renderer #actions');
 		if (actions) {
 			const ar = actions.getBoundingClientRect();
 			if (x >= ar.left && x <= ar.right && y >= ar.top && y <= ar.bottom) return false;
@@ -3297,21 +5713,85 @@
 	}
 
 	function runMountWork() {
+		if (!isExplicitShortNav() && urlLockShortId && getCurrentShortId() !== urlLockShortId) {
+			enforceUrlLock();
+			syncCommentsOpenDocumentFlag();
+			revealActiveNativeRail();
+			syncToolboxLayoutWithNative();
+			return;
+		}
+		if (isLayoutSettling() && isRecentWindowResize() && !isExplicitShortNav()) {
+			syncCommentsOpenDocumentFlag();
+			holdPinnedShortInView();
+			revealActiveNativeRail();
+			syncToolboxLayoutWithNative();
+			return;
+		}
+		if (shouldDeferAutoAdvanceMount()) {
+			scheduleDeferredAutoAdvanceMount();
+			return;
+		}
+		restoreNeutralizedOverlays();
 		removeExternal3xWidgets();
 		if (!ensureMounted()) {
 			syncControllerAttr();
+			syncCommentsOpenDocumentFlag();
+			// Keep retrying after auto-advance until the new short's rail exists.
+			if (autoAdvanceSourceShortId) {
+				scheduleDeferredAutoAdvanceMount();
+				schedulePostAdvanceRepair();
+			}
 			return;
 		}
 		syncControllerAttr();
 		ensureSpeedAnchorIntact();
+		if (!toolboxIsOnCurrentShort()) forceToolboxOntoCurrentShort();
+		if (toolboxIsOnCurrentShort()) {
+			if (autoAdvanceSourceShortId && getCurrentShortId() !== autoAdvanceSourceShortId) {
+				autoAdvanceSourceShortId = '';
+				autoAdvanceMountNotBefore = 0;
+				autoAdvancePendingUntil = 0;
+			} else if (!autoAdvanceSourceShortId) {
+				autoAdvanceMountNotBefore = 0;
+			}
+		} else if (autoAdvanceSourceShortId) {
+			schedulePostAdvanceRepair();
+		}
 		if (!videoObserver) setupVideoHooks();
 		scheduleReapply();
+		applyToolboxPanelOpenState();
+		rememberLiveShortPin();
+		noteCurrentShortForComments();
+		if (pendingCommentsRefreshAfterAdvance) refreshCommentsPanelForCurrentShort();
+		revealActiveNativeRail();
+		syncToolboxLayoutWithNative();
+		syncToolboxAboveComments();
+	}
+
+	function isOwnMutationRecord(m) {
+		const root = speedRootEl;
+		const isOurs = (n) =>
+			n instanceof Element && (n.id === ROOT_ID || (root && root.contains(n)));
+		if (m.target instanceof Node && root && root.contains(m.target)) return true;
+		const nodes = [...m.addedNodes, ...m.removedNodes];
+		if (!nodes.length) return false;
+		return nodes.every(isOurs);
 	}
 
 	function initObservers() {
 		if (mountObserver) mountObserver.disconnect();
-		mountObserver = new MutationObserver(() => {
+		mountObserver = new MutationObserver((records) => {
 			if (mutatingDom) return;
+			// The mutatingDom flag is already cleared by the time this callback
+			// runs, so filter our own insert/remove records explicitly. Without
+			// this, every re-dock re-triggered mount work in a tight loop.
+			if (records.every(isOwnMutationRecord)) return;
+			syncWindowSnapLock();
+			if (!isExplicitShortNav() && urlLockShortId) {
+				enforceUrlLock();
+				return;
+			}
+			rememberLiveShortPin();
 			if (!(speedRootEl && speedRootEl.isConnected)) speedRootEl = null;
 			scheduleMountWork();
 		});
@@ -3323,12 +5803,20 @@
 			childList: true,
 			subtree: true,
 		});
+		ensureShortsResizeObserver();
+		ensureWindowBoxObserver();
+		ensureCommentsAttrObserver();
+		ensureNativeAnchorObserver();
 	}
 
 	function startBootstrapRetries() {
 		if (bootstrapRetryTimer) {
 			clearInterval(bootstrapRetryTimer);
 			bootstrapRetryTimer = null;
+		}
+		if (autoAdvanceMountTimer) {
+			clearTimeout(autoAdvanceMountTimer);
+			autoAdvanceMountTimer = null;
 		}
 		bootstrapRetryCount = 0;
 		bootstrapRetryTimer = setInterval(() => {
@@ -3351,14 +5839,73 @@
 			clearInterval(bootstrapRetryTimer);
 			bootstrapRetryTimer = null;
 		}
+		if (autoAdvanceMountTimer) {
+			clearTimeout(autoAdvanceMountTimer);
+			autoAdvanceMountTimer = null;
+		}
+		if (layoutResumeTimer) {
+			clearTimeout(layoutResumeTimer);
+			layoutResumeTimer = null;
+		}
+		if (restorePinnedRetryTimer) {
+			clearTimeout(restorePinnedRetryTimer);
+			restorePinnedRetryTimer = null;
+		}
+		stopResizeHoldLoop();
+		stopNativeAnchorFollow();
+		hideNativeVolumeHoverUi();
+		if (shortsResizeObserver) {
+			shortsResizeObserver.disconnect();
+			shortsResizeObserver = null;
+		}
+		if (windowBoxObserver) {
+			windowBoxObserver.disconnect();
+			windowBoxObserver = null;
+		}
+		if (nativeAnchorObserver) {
+			nativeAnchorObserver.disconnect();
+			nativeAnchorObserver = null;
+			nativeAnchorObservedEls = [];
+		}
+		if (commentsAttrObserver) {
+			commentsAttrObserver.disconnect();
+			commentsAttrObserver = null;
+		}
+		setResizeLock(false);
+		clearPostAdvanceRepairTimers();
+		if (commentsRefreshTimer) {
+			clearTimeout(commentsRefreshTimer);
+			commentsRefreshTimer = null;
+		}
+		stopCommentsFollowLoop();
+		if (commentsContentObserver) {
+			commentsContentObserver.disconnect();
+			commentsContentObserver = null;
+		}
+		pendingCommentsRefreshAfterAdvance = false;
+		commentsSnapshotBeforeAdvance = '';
+		commentsRefreshInProgress = false;
+		lastSettledCommentsSnapshot = '';
+		lastSettledCommentsShortId = '';
 		if (mainTickInterval) {
 			clearInterval(mainTickInterval);
 			mainTickInterval = null;
 		}
 		document.removeEventListener('click', onDocumentClick, true);
+		document.removeEventListener('click', onCommentsUiPointer, true);
+		document.removeEventListener('click', onManualShortNavGesture, true);
+		document.removeEventListener('pointerdown', onCommentsUiPointer, true);
+		document.removeEventListener('bm-youtube-explicit-short-nav', onExplicitShortNavSignal, true);
 		document.removeEventListener('keydown', onDocumentKeydown, true);
 		document.removeEventListener('wheel', onManualShortNavGesture, true);
 		document.removeEventListener('pointerdown', onManualShortNavGesture, true);
+		document.removeEventListener('scroll', onDocumentScrollForToolbox, true);
+		window.removeEventListener('resize', onWindowLayoutSettle, true);
+		window.removeEventListener('orientationchange', onWindowLayoutSettle, true);
+		if (window.visualViewport) {
+			window.visualViewport.removeEventListener('resize', onWindowLayoutSettle, true);
+		}
+		restoreNeutralizedOverlays();
 		if (commentTranslateObserver) {
 			commentTranslateObserver.disconnect();
 			commentTranslateObserver = null;
@@ -3374,6 +5921,9 @@
 		}
 		window.removeEventListener('pageshow', startBootstrapRetries);
 		window.removeEventListener('yt-navigate-finish', onShortNavigateFinish);
+		window.removeEventListener('yt-navigate-start', onYtNavigateStart);
+		window.removeEventListener('yt-page-data-updated', onYtPageDataUpdated);
+		document.removeEventListener('yt-page-data-updated', onYtPageDataUpdated);
 		if (speedRootEl && speedRootEl.isConnected) {
 			speedRootEl.remove();
 		}
@@ -3400,21 +5950,168 @@
 			delete w[INSTANCE_KEY];
 		}
 		document.documentElement.removeAttribute(CONTROLLER_ATTR);
+		document.documentElement.removeAttribute(COMMENTS_OPEN_ATTR);
+		document.documentElement.removeAttribute(RESIZE_LOCK_ATTR);
 	}
 
 	function syncControllerAttr() {
 		const mounted = !!(speedRootEl && speedRootEl.isConnected);
 		const cur = document.documentElement.getAttribute(CONTROLLER_ATTR);
-		if (mounted && cur !== 'toolbox') {
-			document.documentElement.setAttribute(CONTROLLER_ATTR, 'toolbox');
-		} else if (!mounted && cur === 'toolbox') {
+		if (mounted && cur !== TOOLBOX_ROLE) {
+			document.documentElement.setAttribute(CONTROLLER_ATTR, TOOLBOX_ROLE);
+		} else if (!mounted && cur === TOOLBOX_ROLE) {
 			document.documentElement.removeAttribute(CONTROLLER_ATTR);
 		}
 	}
 
+	/**
+	 * Diagnostics: explain why the native action rail on the on-screen Short is
+	 * not painted (opacity/visibility/display on it or an ancestor, and which
+	 * reel YouTube itself marks active). Exposed via __BM_TOOLBOX_DIAG__().
+	 */
+	let lastRailDiag = null;
+	let lastRailHiddenWarnKey = '';
+
+	function collectRailDiag() {
+		const urlId = getCurrentShortId();
+		const renderers = Array.from(document.querySelectorAll('ytd-reel-video-renderer'));
+		const describeRenderer = (r) => {
+			const rect = r.getBoundingClientRect();
+			return {
+				id: r.getAttribute('id'),
+				isActive: r.hasAttribute('is-active'),
+				reelActive: r.hasAttribute('reel-active'),
+				ariaHidden: r.getAttribute('aria-hidden'),
+				matchesUrl: rendererMatchesCurrentShort(r),
+				top: Math.round(rect.top),
+				height: Math.round(rect.height),
+				onScreen: isElementVisiblyOnScreen(r),
+			};
+		};
+		const preferred = getPreferredActiveReelRenderer();
+		const overlay = overlayFromRenderer(preferred);
+		const actions = overlay ? findReelActionBar(overlay) : null;
+		const chain = [];
+		let hiddenBy = null;
+		if (actions instanceof HTMLElement) {
+			let n = actions;
+			for (let depth = 0; n && depth < 12; depth++) {
+				const cs = getComputedStyle(n);
+				const entry = {
+					tag: n.tagName.toLowerCase(),
+					id: n.id || '',
+					opacity: cs.opacity,
+					visibility: cs.visibility,
+					display: cs.display,
+					transform: cs.transform === 'none' ? '' : cs.transform,
+					pointerEvents: cs.pointerEvents,
+				};
+				chain.push(entry);
+				if (
+					!hiddenBy &&
+					(cs.opacity === '0' || cs.visibility === 'hidden' || cs.display === 'none')
+				) {
+					hiddenBy = entry;
+				}
+				if (n.tagName === 'YTD-REEL-VIDEO-RENDERER') break;
+				n = n.parentElement;
+			}
+		}
+		const actionsRect = actions instanceof HTMLElement ? actions.getBoundingClientRect() : null;
+		return {
+			urlId,
+			hasActions: !!actions,
+			actionsRect: actionsRect
+				? {
+						left: Math.round(actionsRect.left),
+						top: Math.round(actionsRect.top),
+						width: Math.round(actionsRect.width),
+						height: Math.round(actionsRect.height),
+					}
+				: null,
+			hiddenBy,
+			chain,
+			toolboxDocked: toolboxIsOnCurrentShort(),
+			toolboxInSameActions:
+				!!(speedRootEl && actions instanceof HTMLElement && actions.contains(speedRootEl)),
+			commentsOpen: isCommentsPanelOpen(),
+			renderers: renderers.map(describeRenderer),
+		};
+	}
+
+	function checkNativeRailHealth() {
+		let diag = null;
+		try {
+			diag = collectRailDiag();
+		} catch (_) {
+			return;
+		}
+		lastRailDiag = diag;
+		// YouTube hides the overlay/action rail while comments are open.
+		// We un-hide it via CSS; do not treat that as a toolbox failure.
+		if (diag.commentsOpen) return;
+		if (
+			document.querySelector(
+				'ytd-reel-video-renderer[extract-overlay], ytd-reel-video-renderer[fade-overlay]'
+			)
+		) {
+			return;
+		}
+		if (!diag.hasActions || !diag.hiddenBy) return;
+		const key = `${diag.urlId}|${diag.hiddenBy.tag}#${diag.hiddenBy.id}|${diag.hiddenBy.opacity}|${diag.hiddenBy.visibility}|${diag.hiddenBy.display}`;
+		if (key === lastRailHiddenWarnKey) return;
+		lastRailHiddenWarnKey = key;
+		console.warn(
+			'[BM Shorts Toolbox] native action rail is hidden on the current Short — paste this in a bug report:',
+			JSON.stringify(diag)
+		);
+	}
+
+	function maybeFollowCommentsForCurrentShort() {
+		const id = getCurrentShortId();
+		if (!id || id === 'short') return;
+		if (
+			urlLockShortId &&
+			urlLockShortId !== 'short' &&
+			id !== urlLockShortId &&
+			!isExplicitShortNav()
+		) {
+			return;
+		}
+		if (!(commentsWantedOpen || isCommentsPanelOpen())) {
+			lastCommentsFollowShortId = id;
+			return;
+		}
+		if (id !== lastCommentsFollowShortId) {
+			noteCurrentShortForComments();
+			return;
+		}
+		if (pendingCommentsRefreshAfterAdvance) {
+			refreshCommentsPanelForCurrentShort();
+			return;
+		}
+		const bound = getCommentsBoundVideoId();
+		if (bound && bound !== id) {
+			markCommentsNeedFollow();
+			return;
+		}
+		rememberSettledCommentsIfCurrent();
+	}
+
 	function tick() {
+		syncCommentsOpenDocumentFlag();
+		if (!isExplicitShortNav() && urlLockShortId) enforceUrlLock();
+		else if (isExplicitShortNav()) {
+			const now = getCurrentShortId();
+			if (now && now !== 'short' && now !== urlLockShortId) rememberLiveShortPin(true);
+		} else {
+			rememberLiveShortPin();
+		}
+		revealActiveNativeRail();
 		runMountWork();
 		syncPlayThroughShortId();
+		maybeFollowCommentsForCurrentShort();
+		checkNativeRailHealth();
 		if (!(speedRootEl && speedRootEl.isConnected)) return;
 		if (recordingSession) {
 			if (recordingSession.shortId === getCurrentShortId()) {
@@ -3431,8 +6128,8 @@
 		}
 		maybeNeutralizeBlockingOverlays();
 		syncToolboxLayoutWithNative();
-		syncSpeedUiWithNativeLike();
 		syncToolboxAboveComments();
+		syncSpeedUiWithNativeLike();
 	}
 
 	if (document.readyState === 'loading') {
@@ -3447,6 +6144,13 @@
 	setupArrowVolumeSettingSync();
 	installHoldListeners();
 	w.__BM_TOOLBOX_DIAG__ = () => ({
+		rail: (() => {
+			try {
+				return collectRailDiag();
+			} catch (_) {
+				return lastRailDiag;
+			}
+		})(),
 		hasRoot: !!(speedRootEl && speedRootEl.isConnected),
 		rootVars:
 			speedRootEl && speedRootEl.isConnected
@@ -3468,8 +6172,13 @@
 		layout: lastLayoutDiag,
 	});
 	initObservers();
+	commitUrlLockFromLocation();
+	rememberLiveShortPin();
 	window.addEventListener('pageshow', startBootstrapRetries);
 	window.addEventListener('yt-navigate-finish', onShortNavigateFinish);
+	window.addEventListener('yt-navigate-start', onYtNavigateStart);
+	window.addEventListener('yt-page-data-updated', onYtPageDataUpdated);
+	document.addEventListener('yt-page-data-updated', onYtPageDataUpdated);
 	mainTickInterval = setInterval(tick, 2000);
 	w[INSTANCE_KEY] = { destroy: destroyInstance };
 })();

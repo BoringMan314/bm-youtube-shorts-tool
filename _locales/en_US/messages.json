@@ -72,7 +72,7 @@
     "description": "Extension name (English)"
   },
   "popupArrowVolumeLabel": {
-    "message": "Arrow keys control volume",
+    "message": "Arrow keys control volume (5% per press)",
     "description": "Label for arrow-key volume toggle in popup."
   },
   "popupPanelExpandRightLabel": {

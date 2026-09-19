@@ -72,7 +72,7 @@
     "description": "拡張機能名（日本語）"
   },
   "popupArrowVolumeLabel": {
-    "message": "左右キーで音量調整",
+    "message": "左右キーで音量調整（1回 5%）",
     "description": "ポップアップ内の左右キー音量トグルのラベル。"
   },
   "popupPanelExpandRightLabel": {

@@ -81,7 +81,7 @@
 - **Background service worker** [`background.js`](background.js)：處理下載相關流程與分頁協調。
 - **彈出視窗** [`popup.html`](popup.html) / [`popup.js`](popup.js)：搭配 `chrome.storage` 儲存選項。
 - **樣式層** [`content.css`](content.css)：與腳本內影子樣式同步，降低 YouTube 動態 DOM 變動影響。
-- **定位策略**：以 Shorts 右側操作列原生節點為錨點，透過 `MutationObserver` 維持掛載與狀態更新。
+- **定位策略**：以 Shorts 右側操作列原生節點為錨點，工具箱掛在 `document.body` 並以讚列座標對齊；若同時安裝倍速擴充，以 `data-bm-yts-controller="toolbox"` 接管並移除倍速鈕。
 - **多語系**：以 `chrome.i18n` 與 [`_locales/`](_locales/) 提供 `zh_TW` / `zh_CN` / `ja` / `en_US`。
 
 ---

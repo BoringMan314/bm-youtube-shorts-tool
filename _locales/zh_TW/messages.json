@@ -72,7 +72,7 @@
     "description": "擴充功能名稱（繁體中文）"
   },
   "popupArrowVolumeLabel": {
-    "message": "左右鍵控制音量",
+    "message": "左右鍵控制音量（每次 5%）",
     "description": "彈出視窗中的左右鍵音量控制開關標籤。"
   },
   "popupPanelExpandRightLabel": {

@@ -3,6 +3,14 @@
   --bm-item-height: 92px;
   --bm-item-gap: 0px;
   --bm-caption-color: var(--yt-spec-text-primary, #fff);
+  --bm-btn-bg: rgba(255, 255, 255, 0.1);
+  --bm-btn-fg: #fff;
+  --bm-btn-bg-hover: rgba(255, 255, 255, 0.1);
+  --bm-btn-bg-active: rgba(255, 255, 255, 0.2);
+  --bm-btn-backdrop: blur(8px);
+  --bm-icon-size: 24px;
+  --bm-caption-size: 12px;
+  --bm-caption-weight: 500;
   --bm-top-row-offset: 0px;
   --bm-row-speed: 0px;
   --bm-row-frame: 92px;
@@ -23,6 +31,44 @@
   overflow: visible;
 }
 
+html body #yts-speed-root {
+  position: fixed !important;
+  z-index: 2147483646 !important;
+  left: -9999px;
+  top: -9999px;
+}
+
+html[data-bm-yts-comments-open] body #yts-speed-root,
+html body #yts-speed-root[popover],
+html body #yts-speed-root:popover-open {
+  position: fixed !important;
+  z-index: 2147483646 !important;
+  inset: unset !important;
+  margin: 0 !important;
+  border: none !important;
+  padding: 0 !important;
+  background: transparent !important;
+  overflow: visible !important;
+  color: inherit;
+}
+
+#yts-speed-root[data-bm-theme="light"] {
+  --bm-btn-bg: rgba(0, 0, 0, 0.05);
+  --bm-btn-fg: #0f0f0f;
+  --bm-btn-bg-hover: rgba(0, 0, 0, 0.1);
+  --bm-btn-bg-active: rgba(0, 0, 0, 0.2);
+  --bm-caption-color: #0f0f0f;
+}
+
+#yts-speed-root[data-bm-overlay-dark] {
+  --bm-btn-bg: rgba(0, 0, 0, 0.3);
+  --bm-btn-fg: #fff;
+  --bm-btn-bg-hover: rgba(255, 255, 255, 0.1);
+  --bm-btn-bg-active: rgba(255, 255, 255, 0.2);
+  --bm-btn-backdrop: none;
+  --bm-caption-color: #fff;
+}
+
 #yts-speed-root .yts-speed-btn {
   box-sizing: border-box;
   width: var(--bm-btn-size);
@@ -40,22 +86,44 @@
   font-weight: 600;
   line-height: 1;
   letter-spacing: -0.02em;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  transition: filter 0.12s ease, transform 0.1s ease;
+  position: relative;
+  overflow: hidden;
+  color: var(--bm-btn-fg, #fff);
+  background-color: var(--bm-btn-bg, rgba(255, 255, 255, 0.1));
+  backdrop-filter: var(--bm-btn-backdrop, blur(8px));
+  -webkit-backdrop-filter: var(--bm-btn-backdrop, blur(8px));
+  transition: none;
+}
+
+#yts-speed-root .yts-speed-btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: transparent;
+  pointer-events: none;
+  opacity: 1;
 }
 
 #yts-speed-root[data-bm-theme="dark"] .yts-speed-btn {
-  color: #fff;
-  background-color: rgba(255, 255, 255, 0.1);
+  color: var(--bm-btn-fg, #fff);
+  background-color: var(--bm-btn-bg, rgba(255, 255, 255, 0.1));
 }
 
 #yts-speed-root[data-bm-theme="light"] .yts-speed-btn {
-  color: #0f0f0f;
-  background-color: rgba(0, 0, 0, 0.05);
+  color: var(--bm-btn-fg, #0f0f0f);
+  background-color: var(--bm-btn-bg, rgba(0, 0, 0, 0.05));
 }
 
-#yts-speed-root .yts-speed-btn.yts-speed-locked {
+#yts-speed-root[data-bm-overlay-dark] .yts-speed-btn {
+  color: var(--bm-btn-fg, #fff);
+  background-color: var(--bm-btn-bg, rgba(0, 0, 0, 0.3));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+#yts-speed-root .yts-speed-btn.yts-speed-locked,
+#yts-speed-root .yts-speed-btn.yts-speed-locked:hover {
   cursor: not-allowed;
   filter: saturate(0.7);
 }
@@ -92,6 +160,8 @@
   font-weight: 700;
   line-height: 1;
   color: currentColor;
+  position: relative;
+  z-index: 1;
 }
 
 #yts-speed-root .yts-record-btn.yts-recording-active .yts-record-percent {
@@ -117,6 +187,7 @@
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
+  z-index: 1;
 }
 
 #yts-speed-root .yts-speed-value {
@@ -124,15 +195,26 @@
   font-weight: 600;
   line-height: 1;
   letter-spacing: -0.02em;
+  position: relative;
+  z-index: 1;
 }
 
 #yts-speed-root .yts-speed-btn:hover {
-  filter: brightness(1.14);
+  filter: none;
+  background-color: var(--bm-btn-bg, rgba(255, 255, 255, 0.1));
+}
+
+#yts-speed-root .yts-speed-btn:hover::after {
+  background: var(--bm-btn-bg-hover, rgba(255, 255, 255, 0.1));
 }
 
 #yts-speed-root .yts-speed-btn:active {
-  filter: brightness(0.92);
-  transform: scale(0.96);
+  filter: none;
+  transform: none;
+}
+
+#yts-speed-root .yts-speed-btn:active::after {
+  background: var(--bm-btn-bg-active, rgba(255, 255, 255, 0.2));
 }
 
 #yts-speed-root .yts-speed-caption {
@@ -140,8 +222,8 @@
   max-width: 56px;
   text-align: center;
   font-family: "Roboto", "YouTube Noto", Arial, sans-serif;
-  font-size: 12px;
-  font-weight: 500;
+  font-size: var(--bm-caption-size, 12px);
+  font-weight: var(--bm-caption-weight, 500);
   line-height: 1.2;
   color: var(--bm-caption-color, inherit) !important;
   opacity: 1;
@@ -156,11 +238,17 @@
   color: #0f0f0f !important;
 }
 
+#yts-speed-root[data-bm-overlay-dark] .yts-speed-caption {
+  color: #fff !important;
+}
+
 #yts-speed-root .yts-toolbox-icon {
-  width: 25px;
-  height: 25px;
+  width: var(--bm-icon-size, 24px);
+  height: var(--bm-icon-size, 24px);
   display: block;
   margin: 0 auto;
+  position: relative;
+  z-index: 1;
 }
 
 #yts-speed-root .yts-toolbox-panel {
@@ -175,13 +263,14 @@
   transform-origin: left top;
   pointer-events: none;
   transition: opacity 0.15s ease, transform 0.15s ease;
-  z-index: 2147483647;
+  z-index: 2147483646;
 }
 
 #yts-speed-root[data-open="1"] .yts-toolbox-panel {
   opacity: 1;
   transform: translateX(0) scale(1);
   pointer-events: auto;
+  z-index: 2147483646;
 }
 
 #yts-speed-root[data-expand-up] .yts-toolbox-panel {
@@ -264,31 +353,59 @@
   max-height: 100%;
 }
 
-#shorts-player ytd-reel-video-renderer,
-#shorts-player ytd-reel-video-renderer #player-container,
-#shorts-player ytd-reel-video-renderer .html5-video-container {
-  overflow: clip !important;
+/* Overflow only on the action rail. Setting it on the full overlay changes
+   reel height and makes Shorts jump on window resize. */
+ytd-reel-player-overlay-renderer .ytReelPlayerOverlayViewModelActionsContainer,
+ytd-reel-player-overlay-renderer reel-action-bar-view-model,
+ytd-reel-player-overlay-renderer #actions {
+  overflow: visible !important;
+  position: relative;
 }
 
-#shorts-player ytd-reel-video-renderer video {
-  max-width: 100% !important;
-  max-height: 100% !important;
+/* extract-overlay / fade-overlay (and comments-open) set #experiment-overlay
+   opacity:0 while the like/comment/share bar is still inside it. Reveal the
+   overlay without intercepting video clicks. */
+ytd-reel-video-renderer #experiment-overlay,
+html[data-bm-yts-comments-open] ytd-reel-video-renderer #experiment-overlay {
+  opacity: 1 !important;
+  pointer-events: none !important;
+}
+ytd-reel-player-overlay-renderer,
+ytd-reel-player-overlay-renderer yt-reel-player-overlay-view-model,
+html[data-bm-yts-comments-open] ytd-reel-player-overlay-renderer,
+html[data-bm-yts-comments-open] ytd-reel-player-overlay-renderer yt-reel-player-overlay-view-model {
+  visibility: visible !important;
+  pointer-events: none !important;
+}
+ytd-reel-player-overlay-renderer .ytReelPlayerOverlayViewModelActionsContainer,
+ytd-reel-player-overlay-renderer reel-action-bar-view-model,
+ytd-reel-player-overlay-renderer #actions,
+html[data-bm-yts-comments-open] ytd-reel-player-overlay-renderer .ytReelPlayerOverlayViewModelActionsContainer,
+html[data-bm-yts-comments-open] ytd-reel-player-overlay-renderer reel-action-bar-view-model,
+html[data-bm-yts-comments-open] ytd-reel-player-overlay-renderer #actions {
+  visibility: visible !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
 }
 
-#shorts-player ytd-reel-video-renderer [id*="gradient"],
-#shorts-player ytd-reel-video-renderer [class*="gradient"],
-#shorts-player ytd-reel-video-renderer [id*="scrim"],
-#shorts-player ytd-reel-video-renderer [class*="scrim"],
-#shorts-player ytd-reel-video-renderer [id*="shade"],
-#shorts-player ytd-reel-video-renderer [class*="shade"] {
-  background-image: none !important;
-  background: transparent !important;
+/* Stop the browser from shifting Shorts scroll when item heights change. */
+#shorts-container,
+#shorts-inner-container,
+ytd-shorts {
+  overflow-anchor: none !important;
+  scroll-behavior: auto !important;
 }
 
-#shorts-player ytd-reel-video-renderer video.html5-main-video,
-#shorts-player ytd-reel-video-renderer .html5-video-container video {
-  width: 100% !important;
-  height: 100% !important;
-  object-fit: contain !important;
+html[data-bm-yts-resize-lock] #shorts-container,
+html[data-bm-yts-resize-lock] #shorts-inner-container,
+html[data-bm-yts-resize-lock] ytd-shorts {
+  scroll-snap-type: none !important;
+  scroll-behavior: auto !important;
+  overflow-anchor: none !important;
 }
-
+html[data-bm-yts-resize-lock] .reel-video-in-sequence-new,
+html[data-bm-yts-resize-lock] .reel-video-in-sequence {
+  scroll-snap-align: none !important;
+  scroll-snap-stop: normal !important;
+  scroll-margin: 0 !important;
+}
