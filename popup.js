@@ -131,6 +131,11 @@ function init() {
 			[STORAGE_KEY_DEFAULT_SPEED_INDEX]: defaultIdx,
 		});
 	});
+	chrome.storage.onChanged.addListener((changes, areaName) => {
+		if (areaName !== 'local' || !changes[STORAGE_KEY_DEFAULT_SPEED_INDEX]) return;
+		defaultIdx = clampIndex(changes[STORAGE_KEY_DEFAULT_SPEED_INDEX].newValue);
+		syncSpeedLabels();
+	});
 	btnHold.addEventListener('click', () => {
 		holdIdx = (holdIdx + 1) % SPEEDS.length;
 		syncSpeedLabels();

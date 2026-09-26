@@ -123,6 +123,14 @@
 		} catch (_) {}
 	}
 
+	function persistDefaultSpeedIndex() {
+		try {
+			chrome.storage.local.set({
+				[STORAGE_KEY_DEFAULT_SPEED_INDEX]: currentIndex,
+			});
+		} catch (_) {}
+	}
+
 	try {
 		const sessInit = readSessionIndex();
 		if (sessInit !== null) currentIndex = sessInit;
@@ -271,7 +279,9 @@
 					playCountBeforeNext = clampPlayCount(changes[STORAGE_KEY_PLAY_COUNT_BEFORE_NEXT].newValue);
 				}
 				if (changes[STORAGE_KEY_DEFAULT_SPEED_INDEX]) {
-					currentIndex = clampSpeedIndex(changes[STORAGE_KEY_DEFAULT_SPEED_INDEX].newValue);
+					const next = clampSpeedIndex(changes[STORAGE_KEY_DEFAULT_SPEED_INDEX].newValue);
+					if (next === currentIndex) return;
+					currentIndex = next;
 					persistSpeedIndex();
 					updateSpeedUiLockedState();
 					applyToAllLikelyVideos();
@@ -4262,6 +4272,7 @@
 		if (framePlaybackEnabled) return;
 		currentIndex = (currentIndex + 1) % SPEEDS.length;
 		persistSpeedIndex();
+		persistDefaultSpeedIndex();
 		updateSpeedUiLockedState();
 		applyToAllLikelyVideos();
 	}
