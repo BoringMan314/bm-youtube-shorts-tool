@@ -183,6 +183,7 @@
 	let remixRowEl = null;
 	let remixButtonEl = null;
 	let btnLabel = null;
+	let pendingShortsSwipe = null;
 	let speedBtnEl = null;
 	let speedLockIconEl = null;
 	let recordingSession = null;
@@ -728,6 +729,11 @@
 			if (node.id === ROOT_ID || (speedRootEl && (node === speedRootEl || speedRootEl.contains(node)))) {
 				return false;
 			}
+			// Auto-next activates YouTube's own down-navigation button. It is still
+			// outside the comments panel in the DOM, but it must never be handled as
+			// an outside click: doing so cancels its native click before it can move
+			// to the next Short.
+			if (isShortsNavControl(node)) return false;
 			if (isInsideCommentsPanel(node)) return false;
 			if (node.closest('reel-action-bar-view-model, .ytReelPlayerOverlayViewModelActionsContainer')) {
 				return false;
@@ -1833,6 +1839,13 @@
 		if (!windowSizeChangedFromSample()) return false;
 		lastWindowResizeAt = Date.now();
 		windowLayoutBoxKey = getWindowInnerBoxKey();
+		// YouTube moves its single live player between sequence slots while an
+		// auto-next is in flight. Never pin a slot during that hand-off: a resize
+		// at this point can otherwise scroll the old slot over the new media.
+		if (isAutoAdvanceNavigation()) {
+			abortResizeLockForUserNav();
+			return true;
+		}
 		if (isStaleAgainstWindowResize(explicitNavAt)) {
 			explicitNavAt = 0;
 			explicitShortNavUntil = 0;
@@ -1854,7 +1867,11 @@
 	function isExplicitShortNav() {
 		applyWindowSizeChange();
 		if (windowSizeChangedFromSample()) return false;
-		if (isAutoAdvanceNavigation() && !isStaleAgainstWindowResize(lastAdvanceToNextAt)) {
+		// An auto-next is an explicit navigation initiated by this extension. A
+		// resize can occur between its click and YouTube's route update; treating
+		// that resize as newer than the click used to pin the old reel over the
+		// new media, leaving a black/frozen picture with the next Short's audio.
+		if (isAutoAdvanceNavigation()) {
 			return true;
 		}
 		if (Date.now() >= explicitShortNavUntil) return false;
@@ -3958,7 +3975,33 @@
 		if (!(el instanceof Element)) return false;
 		if (el.closest(`#${ROOT_ID}`)) return false;
 		if (isInsideCommentsPanel(el)) return false;
-		return !!el.closest('#navigation-button-down, #navigation-button-up');
+		const control = el.closest(
+			'#navigation-button-down, #navigation-button-up, [data-shorts-navigation], [data-navigation-direction]'
+		);
+		if (control) return true;
+		const button = el.closest('button, yt-icon-button, tp-yt-paper-icon-button, [role="button"]');
+		if (!button) return false;
+		// The current Shorts markup is not stable: some releases keep the old IDs,
+		// while others expose only an accessible label inside the navigation tray.
+		// Restrict label matching to the Shorts surface so unrelated page buttons
+		// cannot unlock the resize pin.
+		const shortsSurface = button.closest(
+			'ytd-shorts, #shorts-container, #shorts-player, .navigation-container'
+		);
+		if (!shortsSurface) return false;
+		if (button.closest('.navigation-container')) return true;
+		const label = [
+			button.getAttribute('aria-label'),
+			button.getAttribute('title'),
+			button.textContent,
+		]
+			.filter(Boolean)
+			.join(' ')
+			.replace(/\s+/g, ' ')
+			.trim();
+		return /(?:next|previous|prev(?:ious)? video|next video|上一(?:部|支|則|个|個)|下一(?:部|支|則|个|個)|前の動画|次の動画|이전 동영상|다음 동영상)/i.test(
+			label
+		);
 	}
 
 	function isDontRecommendChannelAction(e) {
@@ -4003,6 +4046,21 @@
 			noteManualShortNavigation();
 			return;
 		}
+		if (e.type === 'pointerup' || e.type === 'pointercancel') {
+			const start = pendingShortsSwipe;
+			pendingShortsSwipe = null;
+			if (
+				e.type === 'pointerup' &&
+				start &&
+				start.pointerId === e.pointerId &&
+				Math.abs(e.clientY - start.y) >= 28 &&
+				Math.abs(e.clientY - start.y) > Math.abs(e.clientX - start.x)
+			) {
+				noteExplicitShortNav();
+				noteManualShortNavigation();
+			}
+			return;
+		}
 		if (e.type === 'click' || e.type === 'pointerdown') {
 			const t = e.target;
 			if (!(t instanceof Element)) return;
@@ -4016,8 +4074,23 @@
 			if (isShortsNavControl(t)) {
 				noteExplicitShortNav();
 				noteManualShortNavigation();
+				return;
+			}
+			if (
+				e.type === 'pointerdown' &&
+				e.isPrimary !== false &&
+				eventTouchesShortsFeedNav(e) &&
+				!eventTouchesCommentsUi(e)
+			) {
+				pendingShortsSwipe = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
 			}
 		}
+	}
+
+	function onBrowserHistoryShortNavigation() {
+		if (!location.pathname.startsWith('/shorts/')) return;
+		noteExplicitShortNav();
+		noteManualShortNavigation();
 	}
 
 	function onExplicitShortNavSignal() {
@@ -4131,6 +4204,9 @@
 	document.addEventListener('keydown', onDocumentKeydown, true);
 	document.addEventListener('wheel', onManualShortNavGesture, { capture: true, passive: true });
 	document.addEventListener('pointerdown', onManualShortNavGesture, true);
+	document.addEventListener('pointerup', onManualShortNavGesture, true);
+	document.addEventListener('pointercancel', onManualShortNavGesture, true);
+	window.addEventListener('popstate', onBrowserHistoryShortNavigation, true);
 	document.addEventListener('scroll', onDocumentScrollForToolbox, { capture: true, passive: true });
 	window.addEventListener('resize', onWindowLayoutSettle, { capture: true, passive: true });
 	window.addEventListener('orientationchange', onWindowLayoutSettle, { capture: true, passive: true });
@@ -4391,14 +4467,17 @@
 	}
 
 	function goToNextShort() {
-		applyWindowSizeChange();
-		if (isResizeHoldRunning() && !isExplicitShortNav()) return;
 		const now = Date.now();
 		if (now - lastAdvanceToNextAt < 900) return;
 		lastAdvanceToNextAt = now;
 		autoAdvancePendingUntil = now + 2500;
 		autoAdvanceSourceShortId = getCurrentShortId();
 		autoAdvanceMountNotBefore = now + 120;
+		// Mark and release before reading any resize state. The navigation must
+		// win over a concurrently settling window so the live player can move to
+		// YouTube's next sequence slot without our scroll correction intervening.
+		abortResizeLockForUserNav();
+		applyWindowSizeChange();
 		// Remember open comments so we can reload them for the next Short (not leave them closed).
 		pendingCommentsRefreshAfterAdvance = commentsWantedOpen || isCommentsPanelOpen();
 		if (pendingCommentsRefreshAfterAdvance) commentsWantedOpen = true;
@@ -5902,6 +5981,9 @@
 		document.removeEventListener('keydown', onDocumentKeydown, true);
 		document.removeEventListener('wheel', onManualShortNavGesture, true);
 		document.removeEventListener('pointerdown', onManualShortNavGesture, true);
+		document.removeEventListener('pointerup', onManualShortNavGesture, true);
+		document.removeEventListener('pointercancel', onManualShortNavGesture, true);
+		window.removeEventListener('popstate', onBrowserHistoryShortNavigation, true);
 		document.removeEventListener('scroll', onDocumentScrollForToolbox, true);
 		window.removeEventListener('resize', onWindowLayoutSettle, true);
 		window.removeEventListener('orientationchange', onWindowLayoutSettle, true);
