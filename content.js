@@ -4,7 +4,10 @@
 	const SPEEDS = [1, 1.5, 2, 3];
 	const VOLUME_STEP_PERCENT = 5;
 	const ROOT_ID = 'yts-speed-root';
-	const TOOLBOX_TOP_Z = '2147483646';
+	// Keep the toolbox just above the Shorts player. YouTube's menu/dialog
+	// layers use a higher stacking level, so native right-click menus remain
+	// interactive and visually on top.
+	const TOOLBOX_TOP_Z = '4';
 	const INSTANCE_KEY = '__bmYtsToolboxInstance__';
 	const VIDEO_HOOK_KEY = 'bmYtsToolboxHooked';
 	const CONTROLLER_ATTR = 'data-bm-yts-controller';
@@ -291,7 +294,7 @@
 	}
 
 	const SHADOW_STYLES = `
-#${ROOT_ID}{--bm-btn-size:48px;--bm-item-height:92px;--bm-item-gap:0px;--bm-caption-color:var(--yt-spec-text-primary,#fff);--bm-btn-bg:rgba(255,255,255,.1);--bm-btn-fg:#fff;--bm-btn-bg-hover:rgba(255,255,255,.1);--bm-btn-bg-active:rgba(255,255,255,.2);--bm-btn-backdrop:blur(8px);--bm-icon-size:24px;--bm-caption-size:12px;--bm-caption-weight:500;--bm-top-row-offset:0px;--bm-row-speed:0px;--bm-row-frame:92px;--bm-row-screenshot:184px;--bm-row-record:276px;--bm-row-download:368px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;width:var(--bm-btn-size);margin-bottom:0;flex-shrink:0;pointer-events:auto;row-gap:0;position:relative;overflow:visible;z-index:2147483646}
+#${ROOT_ID}{--bm-btn-size:48px;--bm-item-height:92px;--bm-item-gap:0px;--bm-caption-color:var(--yt-spec-text-primary,#fff);--bm-btn-bg:rgba(255,255,255,.1);--bm-btn-fg:#fff;--bm-btn-bg-hover:rgba(255,255,255,.1);--bm-btn-bg-active:rgba(255,255,255,.2);--bm-btn-backdrop:blur(8px);--bm-icon-size:24px;--bm-caption-size:12px;--bm-caption-weight:500;--bm-top-row-offset:0px;--bm-row-speed:0px;--bm-row-frame:92px;--bm-row-screenshot:184px;--bm-row-record:276px;--bm-row-download:368px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;width:var(--bm-btn-size);margin-bottom:0;flex-shrink:0;pointer-events:auto;row-gap:0;position:relative;overflow:visible;z-index:4}
 #${ROOT_ID}[data-bm-theme="light"]{--bm-btn-bg:rgba(0,0,0,.05);--bm-btn-fg:#0f0f0f;--bm-btn-bg-hover:rgba(0,0,0,.1);--bm-btn-bg-active:rgba(0,0,0,.2);--bm-caption-color:#0f0f0f}
 #${ROOT_ID}[data-bm-overlay-dark]{--bm-btn-bg:rgba(0,0,0,.3);--bm-btn-fg:#fff;--bm-btn-bg-hover:rgba(255,255,255,.1);--bm-btn-bg-active:rgba(255,255,255,.2);--bm-btn-backdrop:none;--bm-caption-color:#fff}
 #${ROOT_ID} .yts-speed-btn{box-sizing:border-box;width:var(--bm-btn-size);height:var(--bm-btn-size);padding:0;margin:0;border:none;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:Roboto,"YouTube Noto",Arial,sans-serif;font-size:13px;font-weight:600;line-height:1;letter-spacing:-0.02em;color:var(--bm-btn-fg,#fff);background-color:var(--bm-btn-bg,rgba(255,255,255,.1));backdrop-filter:var(--bm-btn-backdrop,blur(8px));-webkit-backdrop-filter:var(--bm-btn-backdrop,blur(8px));transition:none;position:relative;overflow:hidden}
@@ -323,8 +326,8 @@
 #${ROOT_ID}[data-bm-theme="light"] .yts-speed-caption{color:#0f0f0f!important}
 #${ROOT_ID}[data-bm-overlay-dark] .yts-speed-caption{color:#fff!important}
 #${ROOT_ID} .yts-toolbox-icon{width:var(--bm-icon-size,24px);height:var(--bm-icon-size,24px);display:block;margin:0 auto;position:relative;z-index:1}
-#${ROOT_ID} .yts-toolbox-panel{position:absolute;top:0;left:calc(100% + 8px);display:block;width:var(--bm-btn-size);min-height:calc(var(--bm-row-download) + var(--bm-item-height));opacity:0;transform:translateX(-4px) scale(.98);transform-origin:left top;pointer-events:none;transition:opacity .15s ease,transform .15s ease;z-index:2147483646}
-#${ROOT_ID}[data-open="1"] .yts-toolbox-panel{opacity:1;transform:translateX(0) scale(1);pointer-events:auto;z-index:2147483646}
+#${ROOT_ID} .yts-toolbox-panel{position:absolute;top:0;left:calc(100% + 8px);display:block;width:var(--bm-btn-size);min-height:calc(var(--bm-row-download) + var(--bm-item-height));opacity:0;transform:translateX(-4px) scale(.98);transform-origin:left top;pointer-events:none;transition:opacity .15s ease,transform .15s ease;z-index:4}
+#${ROOT_ID}[data-open="1"] .yts-toolbox-panel{opacity:1;transform:translateX(0) scale(1);pointer-events:auto;z-index:4}
 #${ROOT_ID}[data-expand-up=""] .yts-toolbox-panel{top:auto;bottom:calc(100% + 8px);left:0;right:auto;display:flex;flex-direction:column-reverse;gap:10px;min-height:auto;transform:translateY(4px) scale(.98);transform-origin:center bottom}
 #${ROOT_ID}[data-expand-up=""][data-open="1"] .yts-toolbox-panel{transform:translateY(0) scale(1)}
 #${ROOT_ID}[data-expand-up=""] .yts-toolbox-panel .yts-tool-item{position:relative;left:auto;top:auto;height:auto}
@@ -2043,26 +2046,10 @@
 
 	function centerShortsHostInScroller(host) {
 		if (!(host instanceof HTMLElement)) return;
-		const items = listSequenceItems();
-		const idx = items.indexOf(host);
-		const sc = getShortsScrollContainer();
-		if (sc instanceof HTMLElement && idx >= 0) {
-			const first = items[0];
-			const slotH =
-				first instanceof HTMLElement && first.offsetHeight > 8
-					? first.offsetHeight
-					: sc.clientHeight;
-			if (slotH > 8) {
-				const target = idx * slotH;
-				if (Math.abs(sc.scrollTop - target) >= 1) {
-					try {
-						sc.scrollTo({ top: target, behavior: 'instant' });
-					} catch (_) {
-						sc.scrollTop = target;
-					}
-				}
-			}
-		}
+		// Shorts may change every sequence item's height while the window is
+		// resized. Index × previous item height can point at a different reel,
+		// leaving the old audio playing against a detached/black video surface.
+		// Align only from the current, rendered geometry instead.
 		allShortsScrollers().forEach((el) => alignHostInScroller(el, host));
 	}
 
@@ -2176,19 +2163,10 @@
 
 	function startResizeHoldLoop() {
 		if (resizeHoldRaf) return;
-		const loop = () => {
+		resizeHoldRaf = requestAnimationFrame(() => {
+			resizeHoldRaf = 0;
 			holdPinnedShortInView();
-			if (
-				isLayoutSettling() ||
-				document.documentElement.hasAttribute(RESIZE_LOCK_ATTR)
-			) {
-				resizeHoldRaf = requestAnimationFrame(loop);
-			} else {
-				resizeHoldRaf = 0;
-			}
-		};
-		holdPinnedShortInView();
-		resizeHoldRaf = requestAnimationFrame(loop);
+		});
 	}
 
 	function stopResizeHoldLoop() {
@@ -3039,32 +3017,15 @@
 	function raiseToolboxAboveComments() {
 		const root = speedRootEl;
 		if (!(root instanceof HTMLElement) || !root.isConnected) return;
+		// The toolbox is body-hosted only for stable fixed positioning. Do not
+		// move it to the end of body or promote it to a popover: either action
+		// places it above YouTube's own menus when comments are open, unlike the
+		// native action-rail buttons.
 		if (root.parentElement !== document.body) {
 			document.body.appendChild(root);
 			root.dataset.ytsFixedHost = '1';
-		} else if (
-			isCommentsPanelOpen() &&
-			document.body.lastElementChild !== root
-		) {
-			document.body.appendChild(root);
 		}
-		root.style.setProperty('position', 'fixed', 'important');
-		root.style.setProperty('z-index', TOOLBOX_TOP_Z, 'important');
-		root.style.setProperty('pointer-events', 'auto', 'important');
-		const left = root.style.getPropertyValue('left');
-		const top = root.style.getPropertyValue('top');
-		const width = root.style.getPropertyValue('width');
-		const height = root.style.getPropertyValue('height');
-		if (isCommentsPanelOpen()) {
-			if (root.getAttribute('popover') !== 'manual') root.setAttribute('popover', 'manual');
-			try {
-				if (typeof root.showPopover === 'function' && !root.matches(':popover-open')) {
-					root.showPopover();
-				}
-			} catch (_) {
-				root.removeAttribute('popover');
-			}
-		} else if (root.hasAttribute('popover')) {
+		if (root.hasAttribute('popover')) {
 			try {
 				if (typeof root.hidePopover === 'function' && root.matches(':popover-open')) {
 					root.hidePopover();
@@ -3072,12 +3033,9 @@
 			} catch (_) {}
 			root.removeAttribute('popover');
 		}
-		if (left) root.style.setProperty('left', left, 'important');
-		if (top) root.style.setProperty('top', top, 'important');
-		if (width) root.style.setProperty('width', width, 'important');
-		if (height) root.style.setProperty('height', height, 'important');
 		root.style.setProperty('position', 'fixed', 'important');
 		root.style.setProperty('z-index', TOOLBOX_TOP_Z, 'important');
+		root.style.setProperty('pointer-events', 'auto', 'important');
 	}
 
 	function restoreCommentsScrimPointerEvents() {
@@ -4003,6 +3961,33 @@
 		return !!el.closest('#navigation-button-down, #navigation-button-up');
 	}
 
+	function isDontRecommendChannelAction(e) {
+		const menuItemSelector =
+			'[role="menuitem"], yt-list-item-view-model, ytd-menu-service-item-renderer, tp-yt-paper-item, ytd-menu-navigation-item-renderer';
+		for (const el of eventPathElements(e)) {
+			if (el.closest(`#${ROOT_ID}`)) return false;
+			const item = el.closest(menuItemSelector);
+			if (!(item instanceof HTMLElement)) continue;
+			const label = [
+				item.getAttribute('aria-label'),
+				item.getAttribute('title'),
+				item.textContent,
+			]
+				.filter(Boolean)
+				.join(' ')
+				.replace(/\s+/g, ' ')
+				.trim();
+			if (
+				/(不要(?:向我)?推薦(?:這個|这个)?頻道|不再推薦(?:這個|这个)?頻道|不要(?:向我)?推荐(?:这个)?频道|不再推荐(?:这个)?频道|don't recommend (?:this )?channel|do not recommend (?:this )?channel|このチャンネルをおすすめに表示しない)/i.test(
+					label
+				)
+			) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	function onManualShortNavGesture(e) {
 		if (!e) return;
 		if (e.type === 'wheel') {
@@ -4021,6 +4006,13 @@
 		if (e.type === 'click' || e.type === 'pointerdown') {
 			const t = e.target;
 			if (!(t instanceof Element)) return;
+			// This menu action removes the current Short and YouTube advances to a
+			// replacement. Treat only this user-confirmed action as navigation, so
+			// the resize/video lock does not restore the rejected Short.
+			if (isDontRecommendChannelAction(e)) {
+				noteExplicitShortNav();
+				return;
+			}
 			if (isShortsNavControl(t)) {
 				noteExplicitShortNav();
 				noteManualShortNavigation();

@@ -27,22 +27,20 @@
   pointer-events: auto;
   row-gap: 0;
   position: relative;
-  z-index: 2147483646;
+  z-index: 4;
   overflow: visible;
 }
 
 html body #yts-speed-root {
   position: fixed !important;
-  z-index: 2147483646 !important;
+  z-index: 4 !important;
   left: -9999px;
   top: -9999px;
 }
 
-html[data-bm-yts-comments-open] body #yts-speed-root,
-html body #yts-speed-root[popover],
-html body #yts-speed-root:popover-open {
+html[data-bm-yts-comments-open] body #yts-speed-root {
   position: fixed !important;
-  z-index: 2147483646 !important;
+  z-index: 4 !important;
   inset: unset !important;
   margin: 0 !important;
   border: none !important;
@@ -263,14 +261,14 @@ html body #yts-speed-root:popover-open {
   transform-origin: left top;
   pointer-events: none;
   transition: opacity 0.15s ease, transform 0.15s ease;
-  z-index: 2147483646;
+  z-index: 4;
 }
 
 #yts-speed-root[data-open="1"] .yts-toolbox-panel {
   opacity: 1;
   transform: translateX(0) scale(1);
   pointer-events: auto;
-  z-index: 2147483646;
+  z-index: 4;
 }
 
 #yts-speed-root[data-expand-up] .yts-toolbox-panel {
@@ -399,13 +397,6 @@ ytd-shorts {
 html[data-bm-yts-resize-lock] #shorts-container,
 html[data-bm-yts-resize-lock] #shorts-inner-container,
 html[data-bm-yts-resize-lock] ytd-shorts {
-  scroll-snap-type: none !important;
   scroll-behavior: auto !important;
   overflow-anchor: none !important;
-}
-html[data-bm-yts-resize-lock] .reel-video-in-sequence-new,
-html[data-bm-yts-resize-lock] .reel-video-in-sequence {
-  scroll-snap-align: none !important;
-  scroll-snap-stop: normal !important;
-  scroll-margin: 0 !important;
 }
