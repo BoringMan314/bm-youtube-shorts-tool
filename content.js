@@ -90,7 +90,6 @@
 	let lastAdvanceToNextAt = 0;
 	let autoAdvancePendingUntil = 0;
 	let autoAdvanceSourceShortId = '';
-	let autoAdvanceMountNotBefore = 0;
 	let autoAdvanceMountTimer = null;
 
 	function readSessionIndex() {
@@ -178,10 +177,6 @@
 	let nativeRailVisibilityOverrides = new Map();
 	let mainTickInterval = null;
 	let commentsLiftSlotEl = null;
-	let commentsWantedOpen = false;
-	let commentsUserDismissedUntil = 0;
-	let commentsRefreshTries = 0;
-	let lastCommentsFollowShortId = '';
 	let nativeAnchorObserver = null;
 	let nativeAnchorObservedEls = [];
 	let commentsAttrObserver = null;
@@ -210,6 +205,7 @@
 	const MAX_CAPTURE_BUFFER_BYTES = 256 * 1024 * 1024;
 	let lastLayoutDiag = null;
 	const FRAME_STEP_SECONDS = 1 / 30;
+	const FRAME_STEP_INTERVAL_MS = 500;
 	let framePlaybackEnabled = false;
 	let framePlaybackTimerId = null;
 	let framePlaybackPrevMuted = false;
@@ -254,7 +250,7 @@
 						speedRootEl.toggleAttribute('data-expand-up', !panelExpandRightEnabled);
 					}
 					updateSpeedUiLockedState();
-					applyToAllLikelyVideos();
+					applyToActiveShortsVideo();
 				}
 			);
 		} catch (_) {
@@ -282,7 +278,7 @@
 				}
 				if (changes[STORAGE_KEY_HOLD_SPEED_INDEX]) {
 					holdSpeedIndex = clampSpeedIndex(changes[STORAGE_KEY_HOLD_SPEED_INDEX].newValue);
-					if (holdActive) applyToAllLikelyVideos();
+					if (holdActive) applyToActiveShortsVideo();
 				}
 				if (changes[STORAGE_KEY_AUTO_NEXT]) {
 					autoNextEnabled = changes[STORAGE_KEY_AUTO_NEXT].newValue === true;
@@ -300,7 +296,7 @@
 					currentIndex = next;
 					persistSpeedIndex();
 					updateSpeedUiLockedState();
-					applyToAllLikelyVideos();
+					applyToActiveShortsVideo();
 				}
 			};
 			chrome.storage.onChanged.addListener(storageChangeListener);
@@ -311,7 +307,7 @@
 #${ROOT_ID}{--bm-btn-size:48px;--bm-item-height:92px;--bm-item-gap:0px;--bm-caption-color:var(--yt-spec-text-primary,#fff);--bm-btn-bg:rgba(255,255,255,.1);--bm-btn-fg:#fff;--bm-btn-bg-hover:rgba(255,255,255,.1);--bm-btn-bg-active:rgba(255,255,255,.2);--bm-btn-backdrop:blur(8px);--bm-icon-size:24px;--bm-caption-size:12px;--bm-caption-weight:500;--bm-top-row-offset:0px;--bm-row-speed:0px;--bm-row-frame:92px;--bm-row-screenshot:184px;--bm-row-record:276px;--bm-row-download:368px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;width:var(--bm-btn-size);margin-bottom:0;flex-shrink:0;pointer-events:auto;row-gap:0;position:relative;overflow:visible;z-index:4}
 #${ROOT_ID}[data-bm-theme="light"]{--bm-btn-bg:rgba(0,0,0,.05);--bm-btn-fg:#0f0f0f;--bm-btn-bg-hover:rgba(0,0,0,.1);--bm-btn-bg-active:rgba(0,0,0,.2);--bm-caption-color:#0f0f0f}
 #${ROOT_ID}[data-bm-overlay-dark]{--bm-btn-bg:rgba(0,0,0,.3);--bm-btn-fg:#fff;--bm-btn-bg-hover:rgba(255,255,255,.1);--bm-btn-bg-active:rgba(255,255,255,.2);--bm-btn-backdrop:none;--bm-caption-color:#fff}
-#${ROOT_ID} .yts-speed-btn{box-sizing:border-box;width:var(--bm-btn-size);height:var(--bm-btn-size);padding:0;margin:0;border:none;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:Roboto,"YouTube Noto",Arial,sans-serif;font-size:13px;font-weight:600;line-height:1;letter-spacing:-0.02em;color:var(--bm-btn-fg,#fff);background-color:var(--bm-btn-bg,rgba(255,255,255,.1));backdrop-filter:var(--bm-btn-backdrop,blur(8px));-webkit-backdrop-filter:var(--bm-btn-backdrop,blur(8px));transition:none;position:relative;overflow:hidden}
+#${ROOT_ID} .yts-speed-btn{box-sizing:border-box;width:var(--bm-btn-size);height:var(--bm-btn-size);padding:0;margin:0;border:none;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:Roboto,"YouTube Noto",Arial,sans-serif;font-size:13px;font-weight:600;line-height:1;letter-spacing:-0.02em;color:var(--bm-btn-fg,#fff);background-color:var(--bm-btn-bg,rgba(255,255,255,.1));backdrop-filter:var(--bm-btn-backdrop,blur(8px));-webkit-backdrop-filter:var(--bm-btn-backdrop,blur(8px));transition:background-color .12s ease;position:relative;overflow:hidden}
 #${ROOT_ID} .yts-speed-btn::after{content:"";position:absolute;inset:0;border-radius:inherit;background:transparent;pointer-events:none}
 #${ROOT_ID}[data-bm-theme="dark"] .yts-speed-btn{color:var(--bm-btn-fg,#fff);background-color:var(--bm-btn-bg,rgba(255,255,255,.1))}
 #${ROOT_ID}[data-bm-theme="light"] .yts-speed-btn{color:var(--bm-btn-fg,#0f0f0f);background-color:var(--bm-btn-bg,rgba(0,0,0,.05))}
@@ -620,12 +616,12 @@
 	function ensureCommentsAttrObserver() {
 		if (commentsAttrObserver) return;
 		commentsAttrObserver = new MutationObserver(() => {
-			const open = isCommentsPanelOpen();
-			if (open && Date.now() >= commentsUserDismissedUntil) commentsWantedOpen = true;
 			syncCommentsOpenDocumentFlag();
 			startNativeAnchorFollow(560);
-			if (pendingCommentsRefreshAfterAdvance) refreshCommentsPanelForCurrentShort();
-			else rememberSettledCommentsIfCurrent();
+			if (commentTranslateMode) {
+				ensureCommentTranslateObserver();
+				if (isCommentsPanelOpen()) scheduleCommentTranslateSync();
+			}
 		});
 		const host =
 			document.querySelector('ytd-page-manager') ||
@@ -635,53 +631,8 @@
 		commentsAttrObserver.observe(host, {
 			subtree: true,
 			attributes: true,
-			attributeFilter: ['visibility', 'hidden', 'target-id', 'video-id'],
+			attributeFilter: ['visibility', 'hidden', 'target-id'],
 		});
-	}
-
-	function isCommentsCloseClickFromEvent(e) {
-		if (!e || typeof e.composedPath !== 'function') return false;
-		for (const node of e.composedPath()) {
-			if (!(node instanceof Element)) continue;
-			const closeHost = node.closest
-				? node.closest(
-						'#visibility-button, #dismiss-button, ytd-engagement-panel-title-header-renderer'
-					)
-				: null;
-			if (!closeHost) continue;
-			const panel = closeHost.closest(
-				'ytd-engagement-panel-section-list-renderer, ytd-comments-panel'
-			);
-			if (!(panel instanceof HTMLElement)) continue;
-			const hint = `${panel.getAttribute('target-id') || ''} ${panel.id || ''}`;
-			if (/comment/i.test(hint)) return true;
-		}
-		return false;
-	}
-
-	function noteCommentsDismissedByUser() {
-		commentsWantedOpen = false;
-		commentsUserDismissedUntil = Date.now() + 1600;
-		pendingCommentsRefreshAfterAdvance = false;
-		commentsRefreshInProgress = false;
-		commentsSnapshotBeforeAdvance = '';
-		commentsFollowUntil = 0;
-		stopCommentsFollowLoop();
-	}
-
-	function isCommentsHeaderCloseFromEvent(e) {
-		if (!e || typeof e.composedPath !== 'function') return false;
-		for (const node of e.composedPath()) {
-			if (!(node instanceof Element)) continue;
-			if (!node.closest('#visibility-button, #dismiss-button')) continue;
-			const panel = node.closest(
-				'ytd-engagement-panel-section-list-renderer, ytd-comments-panel'
-			);
-			if (!(panel instanceof HTMLElement)) continue;
-			const hint = `${panel.getAttribute('target-id') || ''} ${panel.id || ''}`;
-			if (/comment/i.test(hint)) return true;
-		}
-		return false;
 	}
 
 	function getCommentsOverlayScrim() {
@@ -730,75 +681,6 @@
 		if (isVisibleCommentsDismissScrim()) return false;
 		const shorts = document.querySelector('ytd-shorts');
 		return !!(shorts && shorts.hasAttribute('is-watch-while-mode'));
-	}
-
-	function shouldDismissCommentsOnOutsideClick(e) {
-		if (!isCommentsPanelOpen()) return false;
-		if (isCommentsSidePanelLayout()) return false;
-		if (!e || typeof e.composedPath !== 'function') return false;
-		const path = e.composedPath();
-		for (const node of path) {
-			if (!(node instanceof Element)) continue;
-			if (node.id === ROOT_ID || (speedRootEl && (node === speedRootEl || speedRootEl.contains(node)))) {
-				return false;
-			}
-			// Auto-next activates YouTube's own down-navigation button. It is still
-			// outside the comments panel in the DOM, but it must never be handled as
-			// an outside click: doing so cancels its native click before it can move
-			// to the next Short.
-			if (isShortsNavControl(node)) return false;
-			if (isInsideCommentsPanel(node)) return false;
-			if (node.closest('reel-action-bar-view-model, .ytReelPlayerOverlayViewModelActionsContainer')) {
-				return false;
-			}
-			const actions = node.closest('#actions');
-			if (actions && !isWatchPageActions(actions) && !isInsideCommentsPanel(actions)) return false;
-		}
-		return path.some(
-			(node) =>
-				node instanceof Element &&
-				(node.id === 'anchored-panel-scrim' ||
-					!!node.closest(
-						'#anchored-panel-scrim, #shorts-panel-container, ytd-shorts, #shorts-container, #shorts-player, ytd-reel-video-renderer'
-					))
-		);
-	}
-
-	function onCommentsUiPointer(e) {
-		const toggle = isCommentsToggleClickFromEvent(e);
-		const headerClose = isCommentsHeaderCloseFromEvent(e);
-		const closeish = headerClose || isCommentsCloseClickFromEvent(e);
-		if (toggle || closeish) {
-			if (headerClose || (toggle && isCommentsPanelOpen())) noteCommentsDismissedByUser();
-			else if (toggle) commentsWantedOpen = true;
-			startNativeAnchorFollow(720);
-			setTimeout(() => {
-				if (!commentsWantedOpen) commentsWantedOpen = false;
-				else commentsWantedOpen = isCommentsPanelOpen();
-				syncCommentsOpenDocumentFlag();
-				syncToolboxLayoutWithNative();
-			}, 40);
-			return;
-		}
-		if (e.type !== 'click') return;
-		if (!shouldDismissCommentsOnOutsideClick(e)) return;
-		noteCommentsDismissedByUser();
-		const viaNativeScrim = e.composedPath().some(
-			(node) =>
-				node instanceof Element &&
-				(node.id === 'anchored-panel-scrim' || node.closest('#anchored-panel-scrim'))
-		);
-		if (!viaNativeScrim) {
-			if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
-			e.stopPropagation();
-			e.preventDefault();
-			closeCommentsPanelIfOpen();
-		}
-		startNativeAnchorFollow(720);
-		setTimeout(() => {
-			syncCommentsOpenDocumentFlag();
-			syncToolboxLayoutWithNative();
-		}, 40);
 	}
 
 	function isOnScreenActionRect(rect) {
@@ -940,7 +822,7 @@
 		const scoped = findNativeLikeButtonForStyle();
 		if (isVisibleNativeRailButton(scoped)) return scoped;
 
-		const nodes = document.querySelectorAll(
+		const nodes = querySelectorAllDeep(
 			'like-button-view-model button, #like-button button, segmented-like-button-view-model button, reel-action-bar-view-model button'
 		);
 		let best = null;
@@ -1261,22 +1143,6 @@
 		return getSpeed();
 	}
 
-	function findSpeedIndexByRate(rate) {
-		for (let i = 0; i < SPEEDS.length; i++) {
-			if (Math.abs(SPEEDS[i] - rate) < 0.01) return i;
-		}
-		return -1;
-	}
-
-	function syncIndexFromObservedRate(rate) {
-		if (holdActive) return false;
-		const idx = findSpeedIndexByRate(rate);
-		if (idx < 0 || idx === currentIndex) return false;
-		currentIndex = idx;
-		updateSpeedUiLockedState();
-		return true;
-	}
-
 	function formatSpeedLabel(s) {
 		if (Number.isInteger(s)) return `${s}×`;
 		const t = String(s).replace(/\.0+$/, '');
@@ -1304,7 +1170,7 @@
 		currentIndex = 0;
 		persistSpeedIndex();
 		updateSpeedUiLockedState();
-		applyToAllLikelyVideos();
+		applyToActiveShortsVideo();
 	}
 
 	function ensureFramePlaybackLoop() {
@@ -1323,7 +1189,7 @@
 				}
 				vv.currentTime = next;
 			} catch (_) {}
-		}, 1000);
+		}, FRAME_STEP_INTERVAL_MS);
 	}
 
 	function stopFramePlayback(options = {}) {
@@ -1346,7 +1212,7 @@
 		if (restoreSpeed) {
 			currentIndex = Math.max(0, Math.min(SPEEDS.length - 1, framePlaybackPrevSpeedIndex));
 			persistSpeedIndex();
-			applyToAllLikelyVideos();
+			applyToActiveShortsVideo();
 		}
 		if (resumePlayback) {
 			const v = getActiveShortsVideo();
@@ -1367,7 +1233,7 @@
 		framePlaybackPrevSpeedIndex = currentIndex;
 		framePlaybackPrevWasPaused = !!v.paused;
 		currentIndex = 0;
-		applyToAllLikelyVideos();
+		applyToActiveShortsVideo();
 		try {
 			v.muted = true;
 			v.pause();
@@ -1827,15 +1693,17 @@
 			(r) => r instanceof HTMLElement && isElementVisiblyOnScreen(r)
 		);
 		if (!visible.length) return null;
-		const activeVisible = visible.find((r) => isLikelyActiveReelRenderer(r));
-		if (activeVisible) return activeVisible;
 		const matches = [];
 		if (id && id !== 'short') {
 			visible.forEach((r) => {
 				if (rendererMatchesCurrentShort(r)) matches.push(r);
 			});
 		}
+		// The active flag can briefly remain on the outgoing reel during a swipe.
+		// Prefer the renderer that matches YouTube's current Shorts URL first.
 		if (matches.length) return bestVisibleReelRenderer(matches);
+		const activeVisible = visible.find((r) => isLikelyActiveReelRenderer(r));
+		if (activeVisible) return activeVisible;
 		return bestVisibleReelRenderer(visible);
 	}
 
@@ -1856,6 +1724,21 @@
 			}
 		}
 		return best;
+	}
+
+	function getActionRendererForCurrentShort() {
+		const id = getCurrentShortId();
+		if (id && id !== 'short') {
+			const matches = querySelectorAllDeep('ytd-reel-video-renderer').filter(
+				(renderer) =>
+					renderer instanceof HTMLElement &&
+					isElementVisiblyOnScreen(renderer) &&
+					rendererMatchesCurrentShort(renderer)
+			);
+			const byUrl = bestVisibleReelRenderer(matches);
+			if (byUrl) return byUrl;
+		}
+		return getPreferredActiveReelRenderer();
 	}
 
 	function overlayFromRenderer(renderer) {
@@ -2010,7 +1893,7 @@
 	}
 
 	function getShortsReelUiScopeRoot() {
-		const preferred = getPreferredActiveReelRenderer();
+		const preferred = getActionRendererForCurrentShort();
 		const preferredOverlay = overlayFromRenderer(preferred);
 		if (overlayIsUsableScope(preferredOverlay)) return preferredOverlay;
 
@@ -2044,99 +1927,6 @@
 		if (sp && !isInsideCommentsPanel(sp)) return sp;
 
 		return null;
-	}
-
-	function rectIntersects(a, b) {
-		if (!a || !b) return false;
-		return !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
-	}
-
-	function isLikelyBlockingOverlay(el) {
-		if (!(el instanceof HTMLElement)) return false;
-		if (el === speedRootEl) return false;
-		if (speedRootEl && (el.contains(speedRootEl) || speedRootEl.contains(el))) return false;
-		if (!isInReelActionUi(el)) return false;
-		const idClass = `${el.id || ''} ${el.className || ''}`;
-		if (/gradient|scrim|shade|overlay|veil|backdrop/i.test(idClass)) return true;
-		const cs = getComputedStyle(el);
-		if (cs.pointerEvents === 'none') return false;
-		const positioned =
-			cs.position === 'absolute' || cs.position === 'fixed' || cs.position === 'sticky';
-		const hasOverlayBg =
-			(cs.backgroundImage && cs.backgroundImage !== 'none') ||
-			(cs.backgroundColor &&
-				cs.backgroundColor !== 'rgba(0, 0, 0, 0)' &&
-				cs.backgroundColor !== 'transparent');
-		return positioned && hasOverlayBg;
-	}
-
-	function neutralizeOverlaysByHitTest() {
-		if (!speedRootEl || !speedRootEl.isConnected) return;
-		const targets = [speedRootEl];
-		const panel = speedRootEl.shadowRoot?.querySelector('.yts-toolbox-panel');
-		if (panel instanceof HTMLElement && speedRootEl.dataset.open === '1') {
-			targets.push(panel);
-		}
-		for (const target of targets) {
-			const r = target.getBoundingClientRect();
-			if (r.width <= 0 || r.height <= 0) continue;
-			const points = [
-				[r.left + r.width * 0.5, r.top + r.height * 0.5],
-				[r.left + 6, r.top + 6],
-				[r.right - 6, r.top + 6],
-				[r.left + 6, r.bottom - 6],
-				[r.right - 6, r.bottom - 6],
-			];
-			for (const [x0, y0] of points) {
-				const x = Math.max(1, Math.min(window.innerWidth - 1, Math.round(x0)));
-				const y = Math.max(1, Math.min(window.innerHeight - 1, Math.round(y0)));
-				const stack = document.elementsFromPoint(x, y);
-				for (const el of stack) {
-					if (!(el instanceof HTMLElement)) continue;
-					if (el === target || el === speedRootEl || speedRootEl.contains(el)) break;
-					if (!isLikelyBlockingOverlay(el)) continue;
-					el.style.pointerEvents = 'none';
-					el.dataset.ytsToolboxOverlayNeutralized = '1';
-				}
-			}
-		}
-	}
-
-	function maybeNeutralizeBlockingOverlays() {
-		// Do not alter YouTube overlay nodes.  Their action rail is rebuilt
-		// dynamically, and changing a sibling's pointer handling can leave the
-		// complete native button column unavailable after a rebuild.
-		restoreNeutralizedOverlays();
-	}
-
-	function restoreNeutralizedOverlays() {
-		document.querySelectorAll('[data-yts-toolbox-overlay-neutralized="1"]').forEach((el) => {
-			if (!(el instanceof HTMLElement)) return;
-			el.style.removeProperty('pointer-events');
-			delete el.dataset.ytsToolboxOverlayNeutralized;
-		});
-	}
-
-	function neutralizeBlockingOverlays() {
-		if (!speedRootEl || !speedRootEl.isConnected) return;
-		const scope = getShortsReelUiScopeRoot();
-		if (!scope) return;
-		const rootRect = speedRootEl.getBoundingClientRect();
-		if (rootRect.width <= 0 || rootRect.height <= 0) return;
-		const candidates = scope.querySelectorAll(
-			'[id*="gradient"], [class*="gradient"], [id*="scrim"], [class*="scrim"], [id*="shade"], [class*="shade"]'
-		);
-		candidates.forEach((el) => {
-			if (!(el instanceof HTMLElement)) return;
-			if (el === speedRootEl || el.contains(speedRootEl) || speedRootEl.contains(el)) return;
-			if (!isInReelActionUi(el)) return;
-			const rect = el.getBoundingClientRect();
-			if (rect.width <= 0 || rect.height <= 0) return;
-			if (!rectIntersects(rect, rootRect)) return;
-			el.style.pointerEvents = 'none';
-			el.dataset.ytsToolboxOverlayNeutralized = '1';
-		});
-		neutralizeOverlaysByHitTest();
 	}
 
 	function ensureStylesInShadowRoot(shadowRoot) {
@@ -2320,8 +2110,6 @@
 		return null;
 	}
 
-	function showOriginalRemixRow() {}
-
 	function ensureSpeedAnchorIntact() {
 		if (!speedRootEl || !speedRootEl.isConnected) return;
 		if (isToolboxLiftedAboveComments()) return;
@@ -2477,94 +2265,6 @@
 			if (rect.width < 40 || rect.height < 40) continue;
 			if (rect.right < 8 || rect.left > window.innerWidth - 8) continue;
 			return true;
-		}
-		return false;
-	}
-
-	function isCommentsText(s, allowClose = false) {
-		const text = s || '';
-		if (/(comment|comments|留言|评论|評論|コメント)/i.test(text)) return true;
-		if (!allowClose) return false;
-		return /(close|關閉|关闭|閉じる)/i.test(text);
-	}
-
-	function isActionBarButton(btn) {
-		if (!(btn instanceof HTMLButtonElement)) return false;
-		if (!isInReelActionUi(btn)) return false;
-		if (btn.closest(`#${ROOT_ID}`)) return false;
-		return !!findActionRowElement(btn);
-	}
-
-	function matchesCommentsToggleByStructure(btn) {
-		if (!isActionBarButton(btn)) return false;
-		const ctl = btn.getAttribute('aria-controls') || '';
-		if (/engagement-panel|comment/i.test(ctl)) return true;
-		if (
-			btn.closest('#comments-button') ||
-			btn.closest('comments-button-view-model') ||
-			btn.closest('ytd-comment-button-renderer')
-		) {
-			return true;
-		}
-		return false;
-	}
-
-	function findCommentsPanelCloseButton() {
-		const panel =
-			getOpenCommentsPanel() ||
-			document.querySelector(
-				'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-comments-section"], ytd-comments-panel'
-		);
-		if (!(panel instanceof Element)) return null;
-		const visibilityBtn = querySelectorDeep('#visibility-button button', panel);
-		if (visibilityBtn instanceof HTMLButtonElement) return visibilityBtn;
-		const header = panel.querySelector('ytd-engagement-panel-title-header-renderer');
-		if (header instanceof Element) {
-			const headerButtons = querySelectorAllDeep('button', header);
-			for (const btn of headerButtons) {
-				if (!(btn instanceof HTMLButtonElement)) continue;
-				const label = btn.getAttribute('aria-label') || btn.getAttribute('title') || '';
-				if (/(close|關閉|关闭|閉じる)/i.test(label)) return btn;
-			}
-		}
-		const closeBtn =
-			querySelectorDeep('#dismiss-button button', panel) ||
-			querySelectorDeep('ytd-engagement-panel-title-header-renderer #button', panel) ||
-			querySelectorDeep('ytd-comments-header-renderer #button', panel);
-		return closeBtn instanceof HTMLButtonElement ? closeBtn : null;
-	}
-
-	function findCommentsToggleButton() {
-		const scope = getShortsReelUiScopeRoot();
-		if (!scope) return null;
-		const allowClose = isCommentsPanelOpen();
-		const buttons = querySelectorAllDeep('button', scope);
-		for (const btn of buttons) {
-			if (!(btn instanceof HTMLButtonElement)) continue;
-			if (matchesCommentsToggleByStructure(btn)) return btn;
-		}
-		for (const btn of buttons) {
-			if (!(btn instanceof HTMLButtonElement)) continue;
-			if (!isActionBarButton(btn)) continue;
-			const label =
-				btn.getAttribute('aria-label') || btn.getAttribute('title') || btn.textContent || '';
-			if (!isCommentsText(label, allowClose)) continue;
-			return btn;
-		}
-		return null;
-	}
-
-	function isCommentsToggleClickFromEvent(e) {
-		if (!e || typeof e.composedPath !== 'function') return false;
-		const allowClose = isCommentsPanelOpen();
-		const path = e.composedPath();
-		for (const node of path) {
-			if (!(node instanceof HTMLButtonElement)) continue;
-			if (matchesCommentsToggleByStructure(node)) return true;
-			if (!isActionBarButton(node)) continue;
-			const label =
-				node.getAttribute('aria-label') || node.getAttribute('title') || node.textContent || '';
-			if (isCommentsText(label, allowClose)) return true;
 		}
 		return false;
 	}
@@ -2753,7 +2453,6 @@
 		if (open) {
 			document.documentElement.setAttribute(COMMENTS_OPEN_ATTR, '1');
 			raiseActionRailAboveComments();
-			if (Date.now() >= commentsUserDismissedUntil) commentsWantedOpen = true;
 		} else {
 			document.documentElement.removeAttribute(COMMENTS_OPEN_ATTR);
 			restoreCommentsScrimPointerEvents();
@@ -2769,52 +2468,6 @@
 		if (!speedRootEl || !speedRootEl.isConnected) return;
 		applyToolboxPanelOpenState();
 	}
-
-	function closeCommentsPanelIfOpen() {
-		if (!isCommentsPanelOpen()) return;
-		const closeBtn = findCommentsPanelCloseButton();
-		if (closeBtn instanceof HTMLButtonElement) {
-			try {
-			closeBtn.click();
-			} catch (_) {}
-			return;
-		}
-		const toggleBtn = findCommentsToggleButton();
-		if (toggleBtn instanceof HTMLButtonElement) {
-			try {
-			toggleBtn.click();
-			} catch (_) {}
-		}
-	}
-
-	function openCommentsPanelForCurrentShort() {
-		if (isCommentsPanelOpen()) return true;
-		const toggleBtn = findCommentsToggleButton();
-		if (!(toggleBtn instanceof HTMLButtonElement)) return false;
-		try {
-			toggleBtn.click();
-		} catch (_) {
-			return false;
-		}
-		return true;
-	}
-
-	/**
-	 * Keep comments open across auto-next and make sure they belong to the new
-	 * Short. YouTube normally reloads the open panel itself; we only step in
-	 * when the panel is still showing the previous video's comments (or got
-	 * closed) after the navigation settled.
-	 */
-	let pendingCommentsRefreshAfterAdvance = false;
-	let commentsSnapshotBeforeAdvance = '';
-	let commentsRefreshInProgress = false;
-	let commentsRefreshTimer = null;
-	let commentsFollowTimer = null;
-	let commentsFollowUntil = 0;
-	let commentsContentObserver = null;
-	let commentsContentObsRaf = 0;
-	let lastSettledCommentsSnapshot = '';
-	let lastSettledCommentsShortId = '';
 
 	function getOpenCommentsPanel() {
 		const preferred = document.querySelector(
@@ -2837,346 +2490,6 @@
 			return panel;
 		}
 		return null;
-	}
-
-	function snapshotCommentsPanel() {
-		const panel = getOpenCommentsPanel();
-		if (!panel) return '';
-		const bound = getCommentsBoundVideoId(panel);
-		const header =
-			panel.querySelector('ytd-comments-header-renderer, ytd-engagement-panel-title-header-renderer');
-		const headerText = header ? (header.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120) : '';
-		const threads = panel.querySelectorAll('ytd-comment-thread-renderer');
-		const firstTexts = [];
-		for (let i = 0; i < Math.min(3, threads.length); i++) {
-			const body = threads[i].querySelector('#content-text, yt-attributed-string');
-			firstTexts.push(body ? (body.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80) : '');
-		}
-		return `${bound}|${headerText}|${threads.length}|${firstTexts.join('||')}`;
-	}
-
-	function commentsSnapshotLooksSettled(snap) {
-		if (!snap) return false;
-		const parts = String(snap).split('|');
-		const headerText = parts[1] || '';
-		const threadCount = Number(parts[2] || 0);
-		if (threadCount > 0) return true;
-		if (/還沒|尚無|沒有留言|no comments|be the first|成為第一|0\s*則/i.test(headerText)) {
-			return true;
-		}
-		return headerText.length > 4 && /\d/.test(headerText);
-	}
-
-	function commentsPanelIsLoading(panel) {
-		if (!(panel instanceof HTMLElement)) return false;
-		const spinner = panel.querySelector(
-			'#spinner, tp-yt-paper-spinner, yt-spinner, #continuations yt-icon'
-		);
-		if (!(spinner instanceof HTMLElement)) return false;
-		const cs = getComputedStyle(spinner);
-		if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
-		const r = spinner.getBoundingClientRect();
-		return r.width > 2 && r.height > 2;
-	}
-
-	function collectCommentsReloadHosts(panel) {
-		const list = [];
-		const add = (el) => {
-			if (el instanceof HTMLElement && !list.includes(el)) list.push(el);
-		};
-		add(panel);
-		if (!(panel instanceof HTMLElement)) return list;
-		add(panel.querySelector('ytd-comments'));
-		add(panel.querySelector('ytd-comment-section-renderer'));
-		panel
-			.querySelectorAll('ytd-item-section-renderer[section-identifier="comment-item-section"]')
-			.forEach(add);
-		return list;
-	}
-
-	function readHostVideoId(el) {
-		if (!(el instanceof HTMLElement)) return '';
-		const attr = el.getAttribute('video-id') || '';
-		let prop = '';
-		try {
-			prop = el.videoId || '';
-		} catch (_) {}
-		let data = '';
-		try {
-			data = (el.__data && el.__data.videoId) || '';
-		} catch (_) {}
-		const vid = attr || prop || data || '';
-		return vid && vid !== 'undefined' ? String(vid) : '';
-	}
-
-	function getCommentsBoundVideoId(panel = getOpenCommentsPanel()) {
-		if (!(panel instanceof HTMLElement)) return '';
-		for (const el of collectCommentsReloadHosts(panel)) {
-			const vid = readHostVideoId(el);
-			if (vid) return vid;
-		}
-		return '';
-	}
-
-	function commentsMatchCurrentShort() {
-		const id = getCurrentShortId();
-		if (!id || id === 'short') return false;
-		if (!isCommentsPanelOpen()) return false;
-		const panel = getOpenCommentsPanel();
-		if (!(panel instanceof HTMLElement)) return false;
-		if (commentsPanelIsLoading(panel)) return false;
-		const bound = getCommentsBoundVideoId(panel);
-		if (bound && bound !== id) return false;
-		const snap = snapshotCommentsPanel();
-		if (commentsSnapshotBeforeAdvance) {
-			if (snap === commentsSnapshotBeforeAdvance) return false;
-			return commentsSnapshotLooksSettled(snap);
-		}
-		if (bound === id) return commentsSnapshotLooksSettled(snap);
-		return commentsSnapshotLooksSettled(snap);
-	}
-
-	function snapshotForPreviousShort(nextId) {
-		if (
-			lastSettledCommentsShortId &&
-			nextId &&
-			nextId !== 'short' &&
-			lastSettledCommentsShortId !== nextId &&
-			lastSettledCommentsSnapshot
-		) {
-			return lastSettledCommentsSnapshot;
-		}
-		return snapshotCommentsPanel();
-	}
-
-	function rememberSettledCommentsIfCurrent() {
-		if (pendingCommentsRefreshAfterAdvance) return;
-		if (!isCommentsPanelOpen()) return;
-		const id = getCurrentShortId();
-		if (!id || id === 'short') return;
-		const bound = getCommentsBoundVideoId();
-		if (bound && bound !== id) return;
-		const snap = snapshotCommentsPanel();
-		if (!commentsSnapshotLooksSettled(snap)) return;
-		lastSettledCommentsSnapshot = snap;
-		lastSettledCommentsShortId = id;
-	}
-
-	function finishCommentsFollow() {
-		pendingCommentsRefreshAfterAdvance = false;
-		commentsRefreshInProgress = false;
-		const snap = snapshotCommentsPanel();
-		commentsSnapshotBeforeAdvance = snap;
-		if (commentsSnapshotLooksSettled(snap)) {
-			lastSettledCommentsSnapshot = snap;
-			const id = getCurrentShortId();
-			if (id && id !== 'short') lastSettledCommentsShortId = id;
-		}
-		stopCommentsFollowLoop();
-	}
-
-	function stopCommentsFollowLoop() {
-		commentsFollowUntil = 0;
-		if (commentsFollowTimer) {
-			clearTimeout(commentsFollowTimer);
-			commentsFollowTimer = null;
-		}
-		if (commentsContentObsRaf) {
-			cancelAnimationFrame(commentsContentObsRaf);
-			commentsContentObsRaf = 0;
-		}
-		if (commentsContentObserver) commentsContentObserver.disconnect();
-	}
-
-	function ensureCommentsContentObserver() {
-		const panel = getOpenCommentsPanel();
-		if (!(panel instanceof HTMLElement)) return;
-		if (!commentsContentObserver) {
-			commentsContentObserver = new MutationObserver(() => {
-				if (!pendingCommentsRefreshAfterAdvance) return;
-				if (commentsContentObsRaf) return;
-				commentsContentObsRaf = requestAnimationFrame(() => {
-					commentsContentObsRaf = 0;
-					if (commentsMatchCurrentShort()) finishCommentsFollow();
-				});
-			});
-		}
-		try {
-			commentsContentObserver.disconnect();
-			commentsContentObserver.observe(panel, {
-				childList: true,
-				subtree: true,
-				characterData: true,
-			});
-				} catch (_) {}
-			}
-
-	function startCommentsFollowLoop() {
-		if (!pendingCommentsRefreshAfterAdvance) return;
-		commentsFollowUntil = Date.now() + 12000;
-		ensureCommentsContentObserver();
-		refreshCommentsPanelForCurrentShort();
-		if (commentsFollowTimer) return;
-		const step = () => {
-			commentsFollowTimer = null;
-			if (!pendingCommentsRefreshAfterAdvance) return;
-			refreshCommentsPanelForCurrentShort();
-			if (!pendingCommentsRefreshAfterAdvance) return;
-			if (Date.now() < commentsFollowUntil) {
-				ensureCommentsContentObserver();
-				commentsFollowTimer = setTimeout(step, 80);
-				return;
-			}
-			pendingCommentsRefreshAfterAdvance = false;
-			commentsRefreshInProgress = false;
-			stopCommentsFollowLoop();
-		};
-		commentsFollowTimer = setTimeout(step, 40);
-	}
-
-	function captureCommentsBeforeNavigate() {
-		if (!(commentsWantedOpen || isCommentsPanelOpen())) return;
-		commentsWantedOpen = true;
-		commentsSnapshotBeforeAdvance = snapshotCommentsPanel() || lastSettledCommentsSnapshot;
-		pendingCommentsRefreshAfterAdvance = true;
-		commentsRefreshTries = 0;
-		commentsFollowUntil = 0;
-		startCommentsFollowLoop();
-	}
-
-	function markCommentsNeedFollow() {
-		if (!(commentsWantedOpen || isCommentsPanelOpen())) return;
-		commentsWantedOpen = true;
-		pendingCommentsRefreshAfterAdvance = true;
-		const id = getCurrentShortId();
-		const prev = snapshotForPreviousShort(id);
-		if (prev) commentsSnapshotBeforeAdvance = prev;
-		else if (!commentsSnapshotBeforeAdvance) commentsSnapshotBeforeAdvance = snapshotCommentsPanel();
-		commentsRefreshTries = 0;
-		commentsFollowUntil = 0;
-		startCommentsFollowLoop();
-	}
-
-	function noteCurrentShortForComments() {
-		const id = getCurrentShortId();
-		if (!id || id === 'short') return;
-		if (lastCommentsFollowShortId && lastCommentsFollowShortId !== id) {
-			markCommentsNeedFollow();
-		} else {
-			rememberSettledCommentsIfCurrent();
-		}
-		lastCommentsFollowShortId = id;
-	}
-
-	function refreshCommentsPanelForCurrentShort() {
-		if (!pendingCommentsRefreshAfterAdvance) return;
-		if (commentsRefreshInProgress) return;
-		if (autoAdvanceSourceShortId && getCurrentShortId() === autoAdvanceSourceShortId) return;
-
-		if (!isCommentsPanelOpen()) {
-			if (!commentsWantedOpen) {
-				finishCommentsFollow();
-				pendingCommentsRefreshAfterAdvance = false;
-				return;
-			}
-			if (!findCommentsToggleButton()) return;
-			commentsRefreshInProgress = true;
-			openCommentsPanelForCurrentShort();
-			if (commentsRefreshTimer) clearTimeout(commentsRefreshTimer);
-			commentsRefreshTimer = setTimeout(() => {
-				commentsRefreshTimer = null;
-				commentsRefreshInProgress = false;
-				if (commentsMatchCurrentShort()) {
-					finishCommentsFollow();
-					return;
-				}
-				retryCommentsFollow();
-			}, 120);
-			return;
-		}
-
-		if (commentsMatchCurrentShort()) {
-			finishCommentsFollow();
-			return;
-		}
-
-		commentsRefreshInProgress = true;
-		nudgeOpenCommentsReload();
-		if (commentsRefreshTimer) clearTimeout(commentsRefreshTimer);
-		commentsRefreshTimer = setTimeout(() => {
-			commentsRefreshTimer = null;
-			commentsRefreshInProgress = false;
-			if (commentsMatchCurrentShort()) {
-				finishCommentsFollow();
-				return;
-			}
-			retryCommentsFollow();
-		}, 140);
-	}
-
-	function retryCommentsFollow() {
-		commentsRefreshTries += 1;
-		if (commentsRefreshTries > 40) {
-			pendingCommentsRefreshAfterAdvance = false;
-			commentsRefreshInProgress = false;
-			stopCommentsFollowLoop();
-			return;
-		}
-		pendingCommentsRefreshAfterAdvance = true;
-		refreshCommentsPanelForCurrentShort();
-	}
-
-	function bindCommentsHostVideoId(el, id) {
-		if (!(el instanceof HTMLElement) || !id || id === 'short') return;
-		try {
-			el.setAttribute('video-id', id);
-			} catch (_) {}
-		try {
-			el.videoId = id;
-		} catch (_) {}
-		try {
-			if (typeof el.set === 'function') el.set('videoId', id);
-		} catch (_) {}
-		try {
-			if (el.__data) {
-				el.__data.videoId = id;
-				if (typeof el.notifyPath === 'function') el.notifyPath('videoId', id);
-			}
-		} catch (_) {}
-		try {
-			if (typeof el.requestUpdate === 'function') el.requestUpdate();
-		} catch (_) {}
-	}
-
-	function nudgeCommentsHost(el, id) {
-		if (!(el instanceof HTMLElement)) return;
-		bindCommentsHostVideoId(el, id);
-		try {
-			el.dispatchEvent(
-				new CustomEvent('yt-reload-continuation', { bubbles: true, composed: true })
-			);
-		} catch (_) {}
-		const methods = [
-			'reload',
-			'reset',
-			'loadComments',
-			'loadCommentSection',
-			'resetContinuation',
-		];
-		for (const name of methods) {
-			try {
-				if (typeof el[name] === 'function') el[name]();
-			} catch (_) {}
-		}
-	}
-
-	function nudgeOpenCommentsReload() {
-		const panel = getOpenCommentsPanel();
-		if (!(panel instanceof HTMLElement)) return;
-		const id = getCurrentShortId();
-		for (const host of collectCommentsReloadHosts(panel)) {
-			nudgeCommentsHost(host, id);
-		}
 	}
 
 	function toolboxIsOnCurrentShort() {
@@ -3229,18 +2542,12 @@
 		const delays = [80, 200, 400, 700, 1100, 1800, 2800];
 		delays.forEach((ms) => {
 			const id = setTimeout(() => {
-				// URL already changed — never keep blocking mount on the new short.
-				if (autoAdvanceSourceShortId && getCurrentShortId() !== autoAdvanceSourceShortId) {
-					autoAdvanceMountNotBefore = 0;
-				}
 				if (!toolboxIsOnCurrentShort()) forceToolboxOntoCurrentShort();
 				scheduleMountWork();
-				if (ms >= 200) refreshCommentsPanelForCurrentShort();
 				if (toolboxIsOnCurrentShort()) {
 					if (autoAdvanceSourceShortId && getCurrentShortId() !== autoAdvanceSourceShortId) {
 						autoAdvanceSourceShortId = '';
 						autoAdvancePendingUntil = 0;
-						autoAdvanceMountNotBefore = 0;
 					}
 				}
 			}, ms);
@@ -3251,6 +2558,7 @@
 	let commentTranslateMode = null;
 	let syncingCommentTranslations = false;
 	let commentTranslateObserver = null;
+	let commentTranslateObservedRoot = null;
 	let commentTranslateSyncTimer = null;
 
 	function getCommentTranslateHostFromNode(node) {
@@ -3296,7 +2604,8 @@
 		return false;
 	}
 
-	function collectCommentTranslateHosts(root = document.documentElement) {
+	function collectCommentTranslateHosts(root = getOpenCommentsPanel()) {
+		if (!(root instanceof HTMLElement)) return [];
 		return querySelectorAllDeep(
 			'ytd-tri-state-button-view-model.translate-button, ytd-tri-state-button-view-model.translate-button-view-model, .translate-button',
 			root
@@ -3338,14 +2647,21 @@
 	}
 
 	function ensureCommentTranslateObserver() {
-		if (commentTranslateObserver) return;
-		const root = document.documentElement || document.body;
-		if (!root) return;
+		const root = getOpenCommentsPanel();
+		if (!(root instanceof HTMLElement)) {
+			if (commentTranslateObserver) commentTranslateObserver.disconnect();
+			commentTranslateObserver = null;
+			commentTranslateObservedRoot = null;
+			return;
+		}
+		if (commentTranslateObserver && commentTranslateObservedRoot === root) return;
+		if (commentTranslateObserver) commentTranslateObserver.disconnect();
 		commentTranslateObserver = new MutationObserver(() => {
 			if (!commentTranslateMode) return;
 			scheduleCommentTranslateSync();
 		});
 		commentTranslateObserver.observe(root, { childList: true, subtree: true });
+		commentTranslateObservedRoot = root;
 	}
 
 	function onDocumentClick(e) {
@@ -3614,9 +2930,6 @@
 	function onDocumentKeydown(e) {
 		if (!(e instanceof KeyboardEvent) || !e.isTrusted) return;
 		const k = e.key;
-		if (k === 'Escape' && isCommentsPanelOpen()) {
-			noteCommentsDismissedByUser();
-		}
 		if (leftRightVolumeEnabled && (k === 'ArrowLeft' || k === 'ArrowRight')) {
 			// Browsers emit repeat keydown events while held, so both a tap and a
 			// held key use the exact same 5% step.
@@ -3631,37 +2944,15 @@
 		}
 	}
 
-	function onYtNavigateStart() {
-		captureCommentsBeforeNavigate();
-	}
-
 	function onShortNavigateFinish() {
-		noteCurrentShortForComments();
 		startNativeAnchorFollow(720);
 		startBootstrapRetries();
-		if (pendingCommentsRefreshAfterAdvance || commentsWantedOpen || isCommentsPanelOpen()) {
-			if (commentsWantedOpen || isCommentsPanelOpen()) {
-				commentsWantedOpen = true;
-				pendingCommentsRefreshAfterAdvance = true;
-				if (!commentsSnapshotBeforeAdvance) {
-					commentsSnapshotBeforeAdvance = snapshotForPreviousShort(getCurrentShortId());
-				}
-			}
-			schedulePostAdvanceRepair();
-			startCommentsFollowLoop();
-			refreshCommentsPanelForCurrentShort();
+		if (commentTranslateMode) {
+			ensureCommentTranslateObserver();
+			if (isCommentsPanelOpen()) scheduleCommentTranslateSync();
 		}
+		schedulePostAdvanceRepair();
 		syncPlayThroughShortId();
-	}
-
-	function onYtPageDataUpdated() {
-		noteCurrentShortForComments();
-		if (pendingCommentsRefreshAfterAdvance) {
-			startCommentsFollowLoop();
-			refreshCommentsPanelForCurrentShort();
-			return;
-		}
-		rememberSettledCommentsIfCurrent();
 	}
 
 	function togglePanel() {
@@ -3719,8 +3010,6 @@
 	}
 
 	document.addEventListener('click', onDocumentClick, true);
-	document.addEventListener('click', onCommentsUiPointer, true);
-	document.addEventListener('pointerdown', onCommentsUiPointer, true);
 	document.addEventListener('keydown', onDocumentKeydown, true);
 	document.addEventListener('scroll', onDocumentScrollForToolbox, { capture: true, passive: true });
 	window.addEventListener('resize', onWindowLayoutSettle, { capture: true, passive: true });
@@ -3770,20 +3059,6 @@
 	chrome.runtime.onMessage.addListener(runtimeMsgHandler);
 
 	function getActiveShortsVideo() {
-		const preferred = getPreferredActiveReelRenderer();
-		if (preferred instanceof HTMLElement) {
-			const preferredVideo = querySelectorDeep('video', preferred);
-			if (preferredVideo instanceof HTMLVideoElement) return preferredVideo;
-		}
-
-		const activeRendererVideo =
-			querySelectorDeep('ytd-reel-video-renderer[is-active] video') ||
-			querySelectorDeep('ytd-reel-video-renderer[reel-active] video') ||
-			querySelectorDeep("ytd-reel-video-renderer[aria-hidden='false'] video");
-		if (activeRendererVideo instanceof HTMLVideoElement) {
-			return activeRendererVideo;
-		}
-
 		const selectors = ['ytd-reel-video-renderer video', 'ytd-shorts video', '#shorts-player video'];
 		const seen = new Set();
 		const candidates = [];
@@ -3795,38 +3070,49 @@
 				}
 			});
 		}
-		let best = null;
-		let bestScore = -1;
 		const vw = window.innerWidth;
 		const vh = window.innerHeight;
 		const urlId = getCurrentShortId();
+		let bestUrlMatch = null;
+		let bestUrlScore = -1;
+		let bestActive = null;
+		let bestActiveScore = -1;
+		let bestVisible = null;
+		let bestVisibleScore = -1;
 		for (const v of candidates) {
 			const r = v.getBoundingClientRect();
-			const iw = Math.min(r.right, vw) - Math.max(r.left, 0);
-			const ih = Math.min(r.bottom, vh) - Math.max(r.top, 0);
-			const area = Math.max(0, iw) * Math.max(0, ih);
+			const iw = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
+			const ih = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+			const area = iw * ih;
 			if (area <= 0) continue;
 			const centerX = (r.left + r.right) / 2;
 			const centerY = (r.top + r.bottom) / 2;
-			const centerDist = Math.abs(centerX - vw / 2) / vw;
-			const centerDistY = Math.abs(centerY - vh / 2) / vh;
-			let score = area * (1 - centerDist * 0.35) * (1 - centerDistY * 0.2);
+			const score =
+				area *
+				(1 - (Math.abs(centerX - vw / 2) / vw) * 0.35) *
+				(1 - (Math.abs(centerY - vh / 2) / vh) * 0.2);
+			if (score > bestVisibleScore) {
+				bestVisible = v;
+				bestVisibleScore = score;
+			}
 			const renderer = closestAcrossShadow(v, 'ytd-reel-video-renderer');
-			if (renderer instanceof HTMLElement) {
-				if (renderer.hasAttribute('is-active') || renderer.hasAttribute('reel-active')) {
-					score *= 2.2;
-				}
-				if (urlId && urlId !== 'short' && rendererMatchesCurrentShort(renderer)) {
-					score *= 3;
+			if (!(renderer instanceof HTMLElement)) continue;
+			if (urlId && urlId !== 'short' && rendererMatchesCurrentShort(renderer)) {
+				if (score > bestUrlScore) {
+					bestUrlMatch = v;
+					bestUrlScore = score;
 				}
 			}
-			if (!v.paused && !v.ended && v.readyState >= 2) score *= 1.45;
-			if (score > bestScore) {
-				bestScore = score;
-				best = v;
+			const active =
+				renderer.hasAttribute('is-active') ||
+				renderer.hasAttribute('reel-active') ||
+				renderer.getAttribute('aria-hidden') === 'false';
+			if (active && score > bestActiveScore) {
+				bestActive = v;
+				bestActiveScore = score;
 			}
 		}
-		return best;
+		return bestUrlMatch || bestActive || bestVisible;
 	}
 
 	function applyPlaybackRateTo(video) {
@@ -3838,7 +3124,7 @@
 		} catch (_) {}
 	}
 
-	function applyToAllLikelyVideos() {
+	function applyToActiveShortsVideo() {
 		const primary = getActiveShortsVideo();
 		applyPlaybackRateTo(primary);
 	}
@@ -3847,7 +3133,7 @@
 		if (reapplyTimer) clearTimeout(reapplyTimer);
 		reapplyTimer = setTimeout(() => {
 			reapplyTimer = null;
-			applyToAllLikelyVideos();
+			applyToActiveShortsVideo();
 		}, 50);
 	}
 
@@ -3857,7 +3143,7 @@
 		persistSpeedIndex();
 		persistDefaultSpeedIndex();
 		updateSpeedUiLockedState();
-		applyToAllLikelyVideos();
+		applyToActiveShortsVideo();
 	}
 
 	function getCurrentShortId() {
@@ -3919,11 +3205,10 @@
 	function scheduleDeferredAutoAdvanceMount() {
 		if (!autoAdvanceSourceShortId || autoAdvanceMountTimer) return;
 		const currentShortId = getCurrentShortId();
-		const targetAt =
+		const delay =
 			currentShortId === autoAdvanceSourceShortId
-				? autoAdvancePendingUntil
-				: autoAdvanceMountNotBefore;
-		const delay = Math.max(50, targetAt - Date.now());
+				? Math.max(50, autoAdvancePendingUntil - Date.now())
+				: 0;
 		autoAdvanceMountTimer = setTimeout(() => {
 			autoAdvanceMountTimer = null;
 			scheduleMountWork();
@@ -3946,7 +3231,6 @@
 			lastPlayCompletionAt = 0;
 		}
 		const urlChanged = prevUrl !== nextUrl;
-		if (urlChanged) noteCurrentShortForComments();
 		if (
 			!urlChanged &&
 			speedRootEl &&
@@ -3964,19 +3248,6 @@
 		lastAdvanceToNextAt = now;
 		autoAdvancePendingUntil = now + 2500;
 		autoAdvanceSourceShortId = getCurrentShortId();
-		autoAdvanceMountNotBefore = now + 120;
-		// Remember open comments so we can reload them for the next Short (not leave them closed).
-		pendingCommentsRefreshAfterAdvance = commentsWantedOpen || isCommentsPanelOpen();
-		if (pendingCommentsRefreshAfterAdvance) commentsWantedOpen = true;
-		commentsSnapshotBeforeAdvance = pendingCommentsRefreshAfterAdvance
-			? snapshotCommentsPanel() || lastSettledCommentsSnapshot
-			: '';
-		commentsRefreshTries = 0;
-		commentsRefreshInProgress = false;
-		if (pendingCommentsRefreshAfterAdvance) {
-			commentsFollowUntil = 0;
-			startCommentsFollowLoop();
-		}
 		lastAnchorFixAt = 0;
 		schedulePostAdvanceRepair();
 
@@ -4603,7 +3874,7 @@
 				stopMediaStreamTracks(stream);
 				v.removeEventListener('ratechange', lock1x);
 				suspendSpeedSync = false;
-				applyToAllLikelyVideos();
+				applyToActiveShortsVideo();
 				console.warn('[BM Shorts Toolbox]', `${t('downloadFailed')} (no_video_track)`);
 				return;
 			}
@@ -4612,7 +3883,7 @@
 				stopMediaStreamTracks(stream);
 				v.removeEventListener('ratechange', lock1x);
 				suspendSpeedSync = false;
-				applyToAllLikelyVideos();
+				applyToActiveShortsVideo();
 				console.warn('[BM Shorts Toolbox]', `${t('downloadFailed')} (recorder_create_failed)`);
 				return;
 			}
@@ -4627,7 +3898,7 @@
 				stopMediaStreamTracks(stream);
 				v.removeEventListener('ratechange', lock1x);
 				suspendSpeedSync = false;
-				applyToAllLikelyVideos();
+				applyToActiveShortsVideo();
 				hardResetDownloadRecordingUi();
 				recordingSession = null;
 				if (collector.exceeded()) {
@@ -4664,7 +3935,7 @@
 								collector.dispose();
 								v.removeEventListener('ratechange', lock1x);
 								suspendSpeedSync = false;
-								applyToAllLikelyVideos();
+								applyToActiveShortsVideo();
 								hardResetDownloadRecordingUi();
 								recordingSession = null;
 							}
@@ -4677,7 +3948,7 @@
 					collector.dispose();
 					v.removeEventListener('ratechange', lock1x);
 					suspendSpeedSync = false;
-					applyToAllLikelyVideos();
+					applyToActiveShortsVideo();
 					hardResetDownloadRecordingUi();
 					recordingSession = null;
 				}
@@ -4692,7 +3963,7 @@
 				collector.dispose();
 				v.removeEventListener('ratechange', lock1x);
 				suspendSpeedSync = false;
-				applyToAllLikelyVideos();
+				applyToActiveShortsVideo();
 				console.warn('[BM Shorts Toolbox]', `${t('downloadFailed')} (recorder_start_failed)`);
 				return;
 			}
@@ -5116,7 +4387,7 @@
 		updateSpeedUiLockedState();
 		syncToolboxLayoutWithNative();
 		syncSpeedUiWithNativeLike();
-		applyToAllLikelyVideos();
+		applyToActiveShortsVideo();
 		return true;
 	}
 
@@ -5158,6 +4429,7 @@
 		const handlers = {
 			ratechange: () => {
 				if (suspendSpeedSync) return;
+				if (getActiveShortsVideo() !== v) return;
 				const want = getEffectivePlaybackRate();
 				if (Math.abs(v.playbackRate - want) > 0.01) applyPlaybackRateTo(v);
 			},
@@ -5293,13 +4565,13 @@
 			if (!holdActive) return;
 			holdActive = false;
 			holdPointerId = null;
-			applyToAllLikelyVideos();
+			applyToActiveShortsVideo();
 		}
 
 		function activateHoldPlayback(pid) {
 			holdActive = true;
 			holdPointerId = pid;
-			applyToAllLikelyVideos();
+			applyToActiveShortsVideo();
 		}
 
 		function cancelPendingHold() {
@@ -5370,7 +4642,6 @@
 			scheduleDeferredAutoAdvanceMount();
 			return;
 		}
-		restoreNeutralizedOverlays();
 		removeExternal3xWidgets();
 		if (!ensureMounted()) {
 			syncControllerAttr();
@@ -5388,10 +4659,7 @@
 		if (toolboxIsOnCurrentShort()) {
 			if (autoAdvanceSourceShortId && getCurrentShortId() !== autoAdvanceSourceShortId) {
 				autoAdvanceSourceShortId = '';
-				autoAdvanceMountNotBefore = 0;
 				autoAdvancePendingUntil = 0;
-			} else if (!autoAdvanceSourceShortId) {
-				autoAdvanceMountNotBefore = 0;
 			}
 		} else if (autoAdvanceSourceShortId) {
 			schedulePostAdvanceRepair();
@@ -5399,8 +4667,6 @@
 		if (!videoObserver) setupVideoHooks();
 		scheduleReapply();
 		applyToolboxPanelOpenState();
-		noteCurrentShortForComments();
-		if (pendingCommentsRefreshAfterAdvance) refreshCommentsPanelForCurrentShort();
 		revealActiveNativeRail();
 		syncToolboxLayoutWithNative();
 		syncToolboxAboveComments();
@@ -5451,11 +4717,13 @@
 		bootstrapRetryCount = 0;
 		bootstrapRetryTimer = setInterval(() => {
 			bootstrapRetryCount += 1;
-			tick();
 			if ((speedRootEl && speedRootEl.isConnected) || bootstrapRetryCount >= 60) {
 				clearInterval(bootstrapRetryTimer);
 				bootstrapRetryTimer = null;
+				return;
 			}
+			// Bootstrap retries only need to find the action rail.
+			scheduleMountWork();
 		}, 250);
 	}
 
@@ -5485,27 +4753,11 @@
 			commentsAttrObserver = null;
 		}
 		clearPostAdvanceRepairTimers();
-		if (commentsRefreshTimer) {
-			clearTimeout(commentsRefreshTimer);
-			commentsRefreshTimer = null;
-		}
-		stopCommentsFollowLoop();
-		if (commentsContentObserver) {
-			commentsContentObserver.disconnect();
-			commentsContentObserver = null;
-		}
-		pendingCommentsRefreshAfterAdvance = false;
-		commentsSnapshotBeforeAdvance = '';
-		commentsRefreshInProgress = false;
-		lastSettledCommentsSnapshot = '';
-		lastSettledCommentsShortId = '';
 		if (mainTickInterval) {
 			clearInterval(mainTickInterval);
 			mainTickInterval = null;
 		}
 		document.removeEventListener('click', onDocumentClick, true);
-		document.removeEventListener('click', onCommentsUiPointer, true);
-		document.removeEventListener('pointerdown', onCommentsUiPointer, true);
 		document.removeEventListener('keydown', onDocumentKeydown, true);
 		document.removeEventListener('scroll', onDocumentScrollForToolbox, true);
 		window.removeEventListener('resize', onWindowLayoutSettle, true);
@@ -5513,11 +4765,11 @@
 		if (window.visualViewport) {
 			window.visualViewport.removeEventListener('resize', onWindowLayoutSettle, true);
 		}
-		restoreNeutralizedOverlays();
 		if (commentTranslateObserver) {
 			commentTranslateObserver.disconnect();
 			commentTranslateObserver = null;
 		}
+		commentTranslateObservedRoot = null;
 		if (commentTranslateSyncTimer) {
 			clearTimeout(commentTranslateSyncTimer);
 			commentTranslateSyncTimer = null;
@@ -5534,9 +4786,6 @@
 		if (holdListenerCleanup) holdListenerCleanup();
 		window.removeEventListener('pageshow', startBootstrapRetries);
 		window.removeEventListener('yt-navigate-finish', onShortNavigateFinish);
-		window.removeEventListener('yt-navigate-start', onYtNavigateStart);
-		window.removeEventListener('yt-page-data-updated', onYtPageDataUpdated);
-		document.removeEventListener('yt-page-data-updated', onYtPageDataUpdated);
 		if (speedRootEl && speedRootEl.isConnected) {
 			speedRootEl.remove();
 		}
@@ -5581,8 +4830,6 @@
 	 * not painted (opacity/visibility/display on it or an ancestor, and which
 	 * reel YouTube itself marks active). Exposed via __BM_TOOLBOX_DIAG__().
 	 */
-	let lastRailDiag = null;
-	let lastRailHiddenWarnKey = '';
 
 	function collectRailDiag() {
 		const urlId = getCurrentShortId();
@@ -5651,64 +4898,11 @@
 		};
 	}
 
-	function checkNativeRailHealth() {
-		let diag = null;
-		try {
-			diag = collectRailDiag();
-		} catch (_) {
-			return;
-		}
-		lastRailDiag = diag;
-		// YouTube hides the overlay/action rail while comments are open.
-		// We un-hide it via CSS; do not treat that as a toolbox failure.
-		if (diag.commentsOpen) return;
-		if (
-			document.querySelector(
-				'ytd-reel-video-renderer[extract-overlay], ytd-reel-video-renderer[fade-overlay]'
-			)
-		) {
-			return;
-		}
-		if (!diag.hasActions || !diag.hiddenBy) return;
-		const key = `${diag.urlId}|${diag.hiddenBy.tag}#${diag.hiddenBy.id}|${diag.hiddenBy.opacity}|${diag.hiddenBy.visibility}|${diag.hiddenBy.display}`;
-		if (key === lastRailHiddenWarnKey) return;
-		lastRailHiddenWarnKey = key;
-		console.warn(
-			'[BM Shorts Toolbox] native action rail is hidden on the current Short — paste this in a bug report:',
-			JSON.stringify(diag)
-		);
-	}
-
-	function maybeFollowCommentsForCurrentShort() {
-		const id = getCurrentShortId();
-		if (!id || id === 'short') return;
-		if (!(commentsWantedOpen || isCommentsPanelOpen())) {
-			lastCommentsFollowShortId = id;
-			return;
-		}
-		if (id !== lastCommentsFollowShortId) {
-			noteCurrentShortForComments();
-			return;
-		}
-		if (pendingCommentsRefreshAfterAdvance) {
-			refreshCommentsPanelForCurrentShort();
-			return;
-		}
-		const bound = getCommentsBoundVideoId();
-		if (bound && bound !== id) {
-			markCommentsNeedFollow();
-			return;
-		}
-		rememberSettledCommentsIfCurrent();
-	}
-
 	function tick() {
 		syncCommentsOpenDocumentFlag();
 		revealActiveNativeRail();
-		runMountWork();
+		syncControllerAttr();
 		syncPlayThroughShortId();
-		maybeFollowCommentsForCurrentShort();
-		checkNativeRailHealth();
 		if (!(speedRootEl && speedRootEl.isConnected)) return;
 		if (recordingSession) {
 			if (recordingSession.shortId === getCurrentShortId()) {
@@ -5723,7 +4917,6 @@
 		} else {
 			updateDownloadRecordingUi(0, false);
 		}
-		maybeNeutralizeBlockingOverlays();
 		syncToolboxLayoutWithNative();
 		syncToolboxAboveComments();
 		syncSpeedUiWithNativeLike();
@@ -5745,7 +4938,7 @@
 			try {
 				return collectRailDiag();
 			} catch (_) {
-				return lastRailDiag;
+				return null;
 			}
 		})(),
 		hasRoot: !!(speedRootEl && speedRootEl.isConnected),
@@ -5771,9 +4964,6 @@
 	initObservers();
 	window.addEventListener('pageshow', startBootstrapRetries);
 	window.addEventListener('yt-navigate-finish', onShortNavigateFinish);
-	window.addEventListener('yt-navigate-start', onYtNavigateStart);
-	window.addEventListener('yt-page-data-updated', onYtPageDataUpdated);
-	document.addEventListener('yt-page-data-updated', onYtPageDataUpdated);
 	mainTickInterval = setInterval(tick, 2000);
 	w[INSTANCE_KEY] = { destroy: destroyInstance };
 })();

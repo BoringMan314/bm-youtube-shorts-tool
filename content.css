@@ -90,7 +90,7 @@ html[data-bm-yts-comments-open] body #yts-speed-root {
   background-color: var(--bm-btn-bg, rgba(255, 255, 255, 0.1));
   backdrop-filter: var(--bm-btn-backdrop, blur(8px));
   -webkit-backdrop-filter: var(--bm-btn-backdrop, blur(8px));
-  transition: none;
+  transition: background-color 0.12s ease;
 }
 
 #yts-speed-root .yts-speed-btn::after {
