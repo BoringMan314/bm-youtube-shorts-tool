@@ -14,9 +14,6 @@
 	const TOOLBOX_ROLE = 'toolbox';
 	const SPEED3X_ROLE = 'speed';
 	const COMMENTS_OPEN_ATTR = 'data-bm-yts-comments-open';
-	const RESIZE_LOCK_ATTR = 'data-bm-yts-resize-lock';
-	const WINDOW_RESIZE_HOLD_MS = 2000;
-	const EXPLICIT_NAV_MS = 2000;
 	const SPEED_STORAGE_KEY = 'bmYtsToolboxSpeed';
 	const VOLUME_HOTKEY_STORAGE_KEY = 'bmYtsArrowVolumeEnabled';
 	const PANEL_EXPAND_RIGHT_STORAGE_KEY = 'bmYtsPanelExpandRight';
@@ -120,6 +117,35 @@
 		return Math.max(1, Math.min(999, Math.floor(v)));
 	}
 
+	function attachBoundedRecorderChunkCollector(recorder, chunks, onLimit) {
+		let bufferedBytes = 0;
+		let exceededLimit = false;
+		const onData = (event) => {
+			if (!event.data || event.data.size <= 0 || exceededLimit) return;
+			if (bufferedBytes + event.data.size > MAX_CAPTURE_BUFFER_BYTES) {
+				exceededLimit = true;
+				onLimit();
+				return;
+			}
+			bufferedBytes += event.data.size;
+			chunks.push(event.data);
+		};
+		recorder.addEventListener('dataavailable', onData);
+		return {
+			exceeded: () => exceededLimit,
+			dispose: () => recorder.removeEventListener('dataavailable', onData),
+		};
+	}
+
+	function stopMediaStreamTracks(stream) {
+		if (!stream || typeof stream.getTracks !== 'function') return;
+		stream.getTracks().forEach((track) => {
+			try {
+				track.stop();
+			} catch (_) {}
+		});
+	}
+
 	function persistSpeedIndex() {
 		try {
 			sessionStorage.setItem(SPEED_STORAGE_KEY, String(currentIndex));
@@ -141,6 +167,7 @@
 
 	let mountObserver = null;
 	let videoObserver = null;
+	const hookedVideos = new Map();
 	let reapplyTimer = null;
 	let bootstrapRetryTimer = null;
 	let bootstrapRetryCount = 0;
@@ -148,25 +175,7 @@
 	let mountWorkScheduled = false;
 	let lastAnchorFixAt = 0;
 	let lastOverlayNeutralizeAt = 0;
-	let layoutQuietUntil = 0;
-	let layoutResumeTimer = null;
-	let resizePinnedShortId = '';
-	let urlLockShortId = '';
-	let explicitShortNavUntil = 0;
-	let explicitNavAt = 0;
-	let resizePinnedSequenceId = '';
-	let resizePinnedHost = null;
-	let resizePinnedIndex = -1;
-	let restorePinnedRetryTimer = null;
-	let resizeHoldRaf = 0;
-	let resizeScrollGuard = false;
-	let shortsResizeObserver = null;
-	let windowBoxObserver = null;
-	let resizeUnlockTries = 0;
-	let shortsResizeReady = false;
-	let lastObservedShortsSize = '';
-	let lastWindowResizeAt = 0;
-	let windowLayoutBoxKey = `${window.innerWidth}x${window.innerHeight}|${window.outerWidth}x${window.outerHeight}`;
+	let nativeRailVisibilityOverrides = new Map();
 	let mainTickInterval = null;
 	let commentsLiftSlotEl = null;
 	let commentsWantedOpen = false;
@@ -183,7 +192,6 @@
 	let remixRowEl = null;
 	let remixButtonEl = null;
 	let btnLabel = null;
-	let pendingShortsSwipe = null;
 	let speedBtnEl = null;
 	let speedLockIconEl = null;
 	let recordingSession = null;
@@ -193,9 +201,13 @@
 	let manualRecordSession = null;
 	let recordBtnEl = null;
 	let runtimeMsgHandler = null;
+	let storageChangeListener = null;
+	let holdListenerCleanup = null;
 	let bgRecordFallbackUsed = false;
 	let suspendSpeedSync = false;
 	const titleByShortId = new Map();
+	const MAX_TITLE_CACHE_ENTRIES = 128;
+	const MAX_CAPTURE_BUFFER_BYTES = 256 * 1024 * 1024;
 	let lastLayoutDiag = null;
 	const FRAME_STEP_SECONDS = 1 / 30;
 	let framePlaybackEnabled = false;
@@ -254,7 +266,7 @@
 	function setupArrowVolumeSettingSync() {
 		loadArrowVolumeSetting();
 		try {
-			chrome.storage.onChanged.addListener((changes, areaName) => {
+			storageChangeListener = (changes, areaName) => {
 				if (areaName !== 'local') return;
 				if (!changes) return;
 				if (changes[VOLUME_HOTKEY_STORAGE_KEY]) {
@@ -290,7 +302,8 @@
 					updateSpeedUiLockedState();
 					applyToAllLikelyVideos();
 				}
-			});
+			};
+			chrome.storage.onChanged.addListener(storageChangeListener);
 		} catch (_) {}
 	}
 
@@ -989,6 +1002,26 @@
 		const br = likeBtn.getBoundingClientRect();
 		if (!isVisibleNativeRailButton(likeBtn)) return false;
 		const pitch = measureNativeRailPitch(likeBtn);
+		if (!isToolboxOnBodyHost(root)) {
+			root.style.visibility = 'visible';
+			root.style.setProperty('position', 'relative', 'important');
+			root.style.setProperty('left', '0px', 'important');
+			root.style.setProperty('top', '0px', 'important');
+			root.style.setProperty('width', `${br.width}px`, 'important');
+			root.style.setProperty('height', `${pitch}px`, 'important');
+			root.style.setProperty('margin', '0px', 'important');
+			root.style.setProperty('z-index', TOOLBOX_TOP_Z, 'important');
+			root.style.setProperty('pointer-events', 'auto', 'important');
+			root.style.setProperty('--bm-top-row-offset', '0px');
+			const size = Math.max(br.width, br.height);
+			if (size >= 32 && size <= 96) root.style.setProperty('--bm-btn-size', `${size}px`);
+			if (pitch >= 56 && pitch <= 180) root.style.setProperty('--bm-item-height', `${pitch}px`);
+			if (isCommentsPanelOpen()) {
+				raiseToolboxAboveComments();
+				return placeToolboxAgainstLikeButton(root, likeBtn);
+			}
+			return true;
+		}
 		const wantLeft = br.left;
 		const wantTop = br.top - pitch;
 		root.style.visibility = 'visible';
@@ -1005,9 +1038,7 @@
 		if (size >= 32 && size <= 96) root.style.setProperty('--bm-btn-size', `${size}px`);
 		if (pitch >= 56 && pitch <= 180) root.style.setProperty('--bm-item-height', `${pitch}px`);
 		if (isCommentsPanelOpen()) raiseToolboxAboveComments();
-		const mainBtn =
-			root.querySelector('.yts-tool-item-main .yts-speed-btn') ||
-			root.querySelector('.yts-speed-btn');
+		const mainBtn = root.shadowRoot?.querySelector('.yts-tool-item-main .yts-speed-btn');
 		if (mainBtn instanceof HTMLElement) {
 			const mb = mainBtn.getBoundingClientRect();
 			const dx = wantLeft - mb.left;
@@ -1041,6 +1072,10 @@
 		if (!(likeRow instanceof HTMLElement) || !likeRow.parentElement) {
 			placeToolboxAgainstLikeButton(root, likeBtn);
 			return;
+		}
+		if (isToolboxOnBodyHost(root) && !isCommentsPanelOpen() && !toolboxPanelWantedOpen) {
+			root.removeAttribute('data-yts-fixed-host');
+			attachRootAtRow(root, likeRow);
 		}
 
 		const layoutHost = getToolboxLayoutHost();
@@ -1119,7 +1154,7 @@
 			if (!Number.isFinite(centerY)) return fallbackPitch * fallbackMul;
 			return Math.max(0, centerY - rootTop - btnSize / 2);
 		};
-		const mainBtn = root.querySelector('.yts-tool-item-main .yts-speed-btn');
+		const mainBtn = root.shadowRoot?.querySelector('.yts-tool-item-main .yts-speed-btn');
 		const mainTop =
 			mainBtn instanceof HTMLElement
 				? Math.max(0, mainBtn.getBoundingClientRect().top - rootTop)
@@ -1607,6 +1642,11 @@
 		return false;
 	}
 
+	function isShortsWheelNavigation(e) {
+		if (!location.pathname.startsWith('/shorts/') || eventTouchesCommentsUi(e)) return false;
+		return true;
+	}
+
 	function isWatchPageActions(el) {
 		return !!(
 			el instanceof Element &&
@@ -1639,9 +1679,9 @@
 
 	function getReelActionBarFromNode(node) {
 		if (!(node instanceof Element)) return null;
-		const extracted = node.closest('reel-action-bar-view-model');
+		const extracted = closestAcrossShadow(node, 'reel-action-bar-view-model');
 		if (extracted instanceof HTMLElement) return extracted;
-		const actions = node.closest('#actions');
+		const actions = closestAcrossShadow(node, '#actions');
 		if (actions instanceof HTMLElement && !isWatchPageActions(actions)) return actions;
 		return null;
 	}
@@ -1652,10 +1692,9 @@
 			return true;
 		}
 		if (isInsideCommentsPanel(el)) return false;
-		return !!(
-			el.closest('ytd-reel-player-overlay-renderer') ||
-			el.closest('reel-action-bar-view-model') ||
-			el.closest('#shorts-player')
+		return !!closestAcrossShadow(
+			el,
+			'ytd-reel-player-overlay-renderer, ytd-reel-player-overlay-renderer-cow, yt-reel-player-overlay-view-model, reel-action-bar-view-model, #shorts-player'
 		);
 	}
 
@@ -1670,12 +1709,34 @@
 
 	function applyToolboxPanelOpenState(root = speedRootEl) {
 		if (!(root instanceof HTMLElement)) return;
-		root.dataset.open = toolboxPanelWantedOpen ? '1' : '0';
+		const open = toolboxPanelWantedOpen;
+		root.dataset.open = open ? '1' : '0';
+		const panel = root.shadowRoot?.querySelector('.yts-toolbox-panel');
+		if (panel instanceof HTMLElement) {
+			const opensUp = root.hasAttribute('data-expand-up');
+			panel.style.setProperty('opacity', open ? '1' : '0', 'important');
+			panel.style.setProperty(
+				'transform',
+				open
+					? opensUp
+						? 'translateY(0) scale(1)'
+						: 'translateX(0) scale(1)'
+					: opensUp
+						? 'translateY(4px) scale(.98)'
+						: 'translateX(-4px) scale(.98)',
+				'important'
+			);
+			panel.style.setProperty('pointer-events', open ? 'auto' : 'none', 'important');
+		}
+		const mainButton = root.shadowRoot?.querySelector('.yts-tool-item-main .yts-speed-btn');
+		mainButton?.setAttribute('aria-expanded', open ? 'true' : 'false');
 	}
 
 	function getVisibleReelOverlays() {
 		const out = [];
-		document.querySelectorAll('ytd-reel-player-overlay-renderer').forEach((o) => {
+		querySelectorAllDeep(
+			'ytd-reel-player-overlay-renderer, ytd-reel-player-overlay-renderer-cow, yt-reel-player-overlay-view-model'
+		).forEach((o) => {
 			if (!(o instanceof HTMLElement) || isInsideCommentsPanel(o)) return;
 			const r = o.getBoundingClientRect();
 			if (r.width < 8 || r.height < 8) return;
@@ -1699,7 +1760,7 @@
 			if (!rid || rid === 'reel-video-renderer') continue;
 			if (rid === id || rid.includes(id)) return true;
 		}
-		const links = renderer.querySelectorAll('a[href*="/shorts/"]');
+		const links = querySelectorAllDeep('a[href*="/shorts/"]', renderer);
 		for (const a of links) {
 			if (!(a instanceof HTMLAnchorElement)) continue;
 			if (a.closest('yt-reel-carousel-view-model, .ytReelCarouselViewModelHost')) continue;
@@ -1707,7 +1768,10 @@
 			if (a.href.includes(`/shorts/${id}`)) return true;
 		}
 		const vi = `/vi/${id}/`;
-		const media = renderer.querySelectorAll('[src*="/vi/"], [srcset*="/vi/"], [style*="/vi/"]');
+		const media = querySelectorAllDeep(
+			'[src*="/vi/"], [srcset*="/vi/"], [style*="/vi/"]',
+			renderer
+		);
 		for (const el of media) {
 			const blob = `${el.getAttribute('src') || ''} ${el.getAttribute('srcset') || ''} ${
 				el.getAttribute('style') || ''
@@ -1724,9 +1788,9 @@
 	function hasUrlMatchedReelRenderer() {
 		const id = getCurrentShortId();
 		if (!id || id === 'short') return false;
-		const all = document.querySelectorAll('ytd-reel-video-renderer');
+		const all = querySelectorAllDeep('ytd-reel-video-renderer');
 		for (const r of all) {
-			if (rendererMatchesCurrentShort(r)) return true;
+			if (isElementVisiblyOnScreen(r) && rendererMatchesCurrentShort(r)) return true;
 		}
 		return false;
 	}
@@ -1735,7 +1799,7 @@
 		if (!(renderer instanceof HTMLElement)) return false;
 		if (renderer.hasAttribute('is-active') || renderer.hasAttribute('reel-active')) return true;
 		if (renderer.getAttribute('aria-hidden') === 'false') return true;
-		const video = renderer.querySelector('video.html5-main-video, video');
+		const video = querySelectorDeep('video.html5-main-video, video', renderer);
 		if (video instanceof HTMLVideoElement && !video.paused && !video.ended) {
 			const r = renderer.getBoundingClientRect();
 			const mid = window.innerHeight / 2;
@@ -1746,7 +1810,7 @@
 
 	function canAttachToolboxToRow(row) {
 		if (!(row instanceof Element)) return false;
-		const renderer = row.closest('ytd-reel-video-renderer');
+		const renderer = closestAcrossShadow(row, 'ytd-reel-video-renderer');
 		if (!(renderer instanceof HTMLElement)) return true;
 		if (rendererMatchesCurrentShort(renderer)) return true;
 		// Never attach into a different Short when we can identify the URL's reel —
@@ -1754,513 +1818,57 @@
 		if (hasUrlMatchedReelRenderer()) return false;
 		if (isLikelyActiveReelRenderer(renderer)) return true;
 		// New Shorts UI often recycles a single renderer with no is-active flag.
-		return document.querySelectorAll('ytd-reel-video-renderer').length === 1;
+		return querySelectorAllDeep('ytd-reel-video-renderer').length === 1;
 	}
 
 	function getPreferredActiveReelRenderer() {
 		const id = getCurrentShortId();
+		const visible = querySelectorAllDeep('ytd-reel-video-renderer').filter(
+			(r) => r instanceof HTMLElement && isElementVisiblyOnScreen(r)
+		);
+		if (!visible.length) return null;
+		const activeVisible = visible.find((r) => isLikelyActiveReelRenderer(r));
+		if (activeVisible) return activeVisible;
 		const matches = [];
 		if (id && id !== 'short') {
-			document.querySelectorAll('ytd-reel-video-renderer').forEach((r) => {
+			visible.forEach((r) => {
 				if (rendererMatchesCurrentShort(r)) matches.push(r);
 			});
 		}
-		if (matches.length === 1) return matches[0];
-		if (matches.length > 1) {
-			const active = matches.find((r) => isLikelyActiveReelRenderer(r));
-			if (active) return active;
-			let best = null;
-			let bestArea = -1;
-			const vw = window.innerWidth;
-			const vh = window.innerHeight;
-			for (const r of matches) {
-				const rect = r.getBoundingClientRect();
-				const iw = Math.min(rect.right, vw) - Math.max(rect.left, 0);
-				const ih = Math.min(rect.bottom, vh) - Math.max(rect.top, 0);
-				const area = Math.max(0, iw) * Math.max(0, ih);
-				if (area > bestArea) {
-					bestArea = area;
-					best = r;
-				}
+		if (matches.length) return bestVisibleReelRenderer(matches);
+		return bestVisibleReelRenderer(visible);
+	}
+
+	function bestVisibleReelRenderer(renderers) {
+		let best = null;
+		let bestScore = -1;
+		for (const renderer of renderers) {
+			if (!(renderer instanceof HTMLElement) || !isElementVisiblyOnScreen(renderer)) continue;
+			const r = renderer.getBoundingClientRect();
+			const width = Math.max(0, Math.min(r.right, window.innerWidth) - Math.max(r.left, 0));
+			const height = Math.max(0, Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 0));
+			const area = width * height;
+			const centerDistance = Math.abs((r.top + r.bottom) / 2 - window.innerHeight / 2);
+			const score = area - centerDistance;
+			if (score > bestScore) {
+				best = renderer;
+				bestScore = score;
 			}
-			if (best) return best;
-			return matches[0];
 		}
-
-		const byAttr =
-			document.querySelector('ytd-reel-video-renderer[is-active]') ||
-			document.querySelector('ytd-reel-video-renderer[reel-active]') ||
-			document.querySelector("ytd-reel-video-renderer[aria-hidden='false']");
-		if (byAttr instanceof HTMLElement) return byAttr;
-
-		const playing = Array.from(
-			document.querySelectorAll('ytd-reel-video-renderer video')
-		).find((v) => v instanceof HTMLVideoElement && !v.paused && !v.ended);
-		if (playing instanceof HTMLVideoElement) {
-			const host = playing.closest('ytd-reel-video-renderer');
-			if (host instanceof HTMLElement) return host;
-		}
-		return null;
+		return best;
 	}
 
 	function overlayFromRenderer(renderer) {
 		if (!(renderer instanceof HTMLElement)) return null;
 		const overlay =
-			renderer.querySelector('ytd-reel-player-overlay-renderer') ||
-			querySelectorDeep('ytd-reel-player-overlay-renderer', renderer);
+			renderer.querySelector(
+				'ytd-reel-player-overlay-renderer, ytd-reel-player-overlay-renderer-cow, yt-reel-player-overlay-view-model'
+			) ||
+			querySelectorDeep(
+				'ytd-reel-player-overlay-renderer, ytd-reel-player-overlay-renderer-cow, yt-reel-player-overlay-view-model',
+				renderer
+			);
 		return overlay instanceof HTMLElement && !isInsideCommentsPanel(overlay) ? overlay : null;
-	}
-
-	function isLayoutSettling() {
-		return Date.now() < layoutQuietUntil;
-	}
-
-	function isRecentWindowResize() {
-		return Date.now() - lastWindowResizeAt < WINDOW_RESIZE_HOLD_MS;
-	}
-
-	function getWindowInnerBoxKey() {
-		return `${window.innerWidth}x${window.innerHeight}|${window.outerWidth}x${window.outerHeight}`;
-	}
-
-	function windowSizeChangedFromSample() {
-		return getWindowInnerBoxKey() !== windowLayoutBoxKey;
-	}
-
-	function isResizeHoldRunning() {
-		return document.documentElement.hasAttribute(RESIZE_LOCK_ATTR);
-	}
-
-	function isStaleAgainstWindowResize(at) {
-		return !!(at && lastWindowResizeAt && at <= lastWindowResizeAt);
-	}
-
-	function applyWindowSizeChange() {
-		if (!windowSizeChangedFromSample()) return false;
-		lastWindowResizeAt = Date.now();
-		windowLayoutBoxKey = getWindowInnerBoxKey();
-		// YouTube moves its single live player between sequence slots while an
-		// auto-next is in flight. Never pin a slot during that hand-off: a resize
-		// at this point can otherwise scroll the old slot over the new media.
-		if (isAutoAdvanceNavigation()) {
-			abortResizeLockForUserNav();
-			return true;
-		}
-		if (isStaleAgainstWindowResize(explicitNavAt)) {
-			explicitNavAt = 0;
-			explicitShortNavUntil = 0;
-		}
-		beginResizeLock();
-		return true;
-	}
-
-	function syncWindowSnapLock() {
-		applyWindowSizeChange();
-		if (isResizeHoldRunning() && !isExplicitShortNav()) holdPinnedShortInView();
-	}
-
-	function isBrowserZoomWheel(e) {
-		if (!e || e.type !== 'wheel') return false;
-		return !!(e.ctrlKey || e.metaKey);
-	}
-
-	function isExplicitShortNav() {
-		applyWindowSizeChange();
-		if (windowSizeChangedFromSample()) return false;
-		// An auto-next is an explicit navigation initiated by this extension. A
-		// resize can occur between its click and YouTube's route update; treating
-		// that resize as newer than the click used to pin the old reel over the
-		// new media, leaving a black/frozen picture with the next Short's audio.
-		if (isAutoAdvanceNavigation()) {
-			return true;
-		}
-		if (Date.now() >= explicitShortNavUntil) return false;
-		if (isStaleAgainstWindowResize(explicitNavAt)) return false;
-		return true;
-	}
-
-	function noteExplicitShortNav() {
-		explicitNavAt = Date.now();
-		explicitShortNavUntil = explicitNavAt + EXPLICIT_NAV_MS;
-		abortResizeLockForUserNav();
-	}
-
-	function commitUrlLockFromLocation() {
-		applyWindowSizeChange();
-		if (!isExplicitShortNav() && urlLockShortId && urlLockShortId !== 'short') return;
-		const id = getCurrentShortId();
-		if (!id || id === 'short') return;
-		urlLockShortId = id;
-		resizePinnedShortId = id;
-	}
-
-	function isUnauthorizedShortChange() {
-		if (isExplicitShortNav()) return false;
-		if (!urlLockShortId || urlLockShortId === 'short') return false;
-		const now = getCurrentShortId();
-		return !!(now && now !== 'short' && now !== urlLockShortId);
-	}
-
-	function enforceUrlLock() {
-		applyWindowSizeChange();
-		if (!urlLockShortId || urlLockShortId === 'short') {
-			const id = getCurrentShortId();
-			if (id && id !== 'short' && !isResizeHoldRunning()) {
-				urlLockShortId = id;
-				resizePinnedShortId = id;
-			}
-			return;
-		}
-		if (isExplicitShortNav()) {
-			commitUrlLockFromLocation();
-			return;
-		}
-		resizePinnedShortId = urlLockShortId;
-		holdPinnedShortInView();
-		if (getCurrentShortId() !== urlLockShortId && !isResizeHoldRunning()) beginResizeLock();
-	}
-
-	function abortResizeLockForUserNav() {
-		if (!isLayoutSettling() && !document.documentElement.hasAttribute(RESIZE_LOCK_ATTR)) return;
-		stopResizeHoldLoop();
-		setResizeLock(false);
-		layoutQuietUntil = 0;
-		lastWindowResizeAt = 0;
-		resizeUnlockTries = 0;
-		if (layoutResumeTimer) {
-			clearTimeout(layoutResumeTimer);
-			layoutResumeTimer = null;
-		}
-	}
-
-	function noteLayoutSettling(ms = WINDOW_RESIZE_HOLD_MS) {
-		layoutQuietUntil = Math.max(layoutQuietUntil, Date.now() + ms);
-		if (layoutResumeTimer) clearTimeout(layoutResumeTimer);
-		layoutResumeTimer = setTimeout(() => {
-			layoutResumeTimer = null;
-			endResizeLock();
-		}, ms + 80);
-	}
-
-	function findSequenceHostForShortId(id) {
-		if (!id || id === 'short') return null;
-		const renderers = document.querySelectorAll('ytd-reel-video-renderer');
-		for (const r of renderers) {
-			if (!rendererHasShortId(r, id)) continue;
-			const seq = r.closest('.reel-video-in-sequence-new, .reel-video-in-sequence');
-			return seq instanceof HTMLElement ? seq : r;
-		}
-		const needle = `/shorts/${id}`;
-		const vi = `/vi/${id}/`;
-		const items = document.querySelectorAll(
-			'.reel-video-in-sequence-new, .reel-video-in-sequence, ytd-reel-video-renderer'
-		);
-		for (const el of items) {
-			if (!(el instanceof HTMLElement)) continue;
-			if (el.querySelector(`a[href*="${needle}"]`)) return el;
-			const thumb = el.querySelector('[style*="ytimg"], [src*="ytimg"], [srcset*="ytimg"]');
-			const blob = `${el.getAttribute('style') || ''} ${
-				thumb instanceof HTMLElement
-					? `${thumb.getAttribute('style') || ''} ${thumb.getAttribute('src') || ''} ${
-							thumb.getAttribute('srcset') || ''
-						}`
-					: ''
-			}`;
-			if (blob.includes(vi)) return el;
-		}
-		return null;
-	}
-
-	function getShortsScrollContainer() {
-		const main = document.querySelector('#shorts-container');
-		if (main instanceof HTMLElement) return main;
-		const inner = document.querySelector('#shorts-inner-container');
-		if (inner instanceof HTMLElement) return inner;
-		const shorts = document.querySelector('ytd-shorts');
-		return shorts instanceof HTMLElement ? shorts : null;
-	}
-
-	function allShortsScrollers() {
-		const out = [];
-		['#shorts-container', '#shorts-inner-container'].forEach((sel) => {
-			const el = document.querySelector(sel);
-			if (el instanceof HTMLElement && !out.includes(el)) out.push(el);
-		});
-		return out;
-	}
-
-	function listSequenceItems() {
-		const inner = document.querySelector('#shorts-inner-container');
-		const root = inner instanceof HTMLElement ? inner : getShortsScrollContainer();
-		if (!(root instanceof HTMLElement)) return [];
-		const direct = Array.from(
-			root.querySelectorAll(
-				':scope > .reel-video-in-sequence-new, :scope > .reel-video-in-sequence'
-			)
-		);
-		if (direct.length) return direct;
-		return Array.from(
-			document.querySelectorAll('.reel-video-in-sequence-new, .reel-video-in-sequence')
-		);
-	}
-
-	function shortIdFromHost(host) {
-		if (!(host instanceof HTMLElement)) return '';
-		const renderer =
-			host.tagName === 'YTD-REEL-VIDEO-RENDERER'
-				? host
-				: host.querySelector('ytd-reel-video-renderer');
-		if (renderer instanceof HTMLElement) {
-			const attrs = [
-				renderer.getAttribute('reel-video-id'),
-				renderer.getAttribute('video-id'),
-				renderer.dataset.videoId,
-			];
-			for (const rid of attrs) {
-				if (rid && rid !== 'reel-video-renderer' && rid !== 'short') return rid;
-			}
-			const links = renderer.querySelectorAll('a[href*="/shorts/"]');
-			for (const a of links) {
-				if (!(a instanceof HTMLAnchorElement)) continue;
-				if (a.closest('yt-reel-carousel-view-model, .ytReelCarouselViewModelHost')) continue;
-				const m = `${a.getAttribute('href') || ''} ${a.href || ''}`.match(
-					/\/shorts\/([^/?#]+)/
-				);
-				if (m && m[1] && m[1] !== 'short') return m[1];
-			}
-		}
-		const blob = `${host.getAttribute('style') || ''} ${
-			host.querySelector('[style*="/vi/"], [src*="/vi/"]')?.getAttribute('style') || ''
-		} ${host.querySelector('[src*="/vi/"]')?.getAttribute('src') || ''}`;
-		const tm = blob.match(/\/vi\/([^/]+)\//);
-		return tm ? tm[1] : '';
-	}
-
-	function shortsViewportSizeKey() {
-		const sc = getShortsScrollContainer();
-		const box =
-			sc instanceof HTMLElement
-				? `${Math.round(sc.clientWidth)}x${Math.round(sc.clientHeight)}`
-				: '0x0';
-		return `${box}|${window.innerWidth}x${window.innerHeight}`;
-	}
-
-	function alignHostInScroller(sc, host) {
-		if (!(sc instanceof HTMLElement) || !(host instanceof HTMLElement)) return;
-		const scRect = sc.getBoundingClientRect();
-		const hostRect = host.getBoundingClientRect();
-		if (scRect.height < 8) return;
-		const delta = hostRect.top - scRect.top;
-		if (!Number.isFinite(delta) || Math.abs(delta) < 0.5) return;
-		const next = Math.max(0, sc.scrollTop + delta);
-		if (Math.abs(sc.scrollTop - next) < 0.5) return;
-		try {
-			sc.scrollTo({ top: next, behavior: 'instant' });
-		} catch (_) {
-			sc.scrollTop = next;
-		}
-	}
-
-	function centerShortsHostInScroller(host) {
-		if (!(host instanceof HTMLElement)) return;
-		// Shorts may change every sequence item's height while the window is
-		// resized. Index × previous item height can point at a different reel,
-		// leaving the old audio playing against a detached/black video surface.
-		// Align only from the current, rendered geometry instead.
-		allShortsScrollers().forEach((el) => alignHostInScroller(el, host));
-	}
-
-	function captureVisibleShortPin() {
-		const items = listSequenceItems();
-		const sc = getShortsScrollContainer();
-		let host = null;
-		let idx = -1;
-		if (sc instanceof HTMLElement && items.length) {
-			const sr = sc.getBoundingClientRect();
-			let best = -1;
-			items.forEach((item, i) => {
-				const r = item.getBoundingClientRect();
-				const overlap = Math.max(
-					0,
-					Math.min(r.bottom, sr.bottom) - Math.max(r.top, sr.top)
-				);
-				if (overlap > best) {
-					best = overlap;
-					host = item;
-					idx = i;
-				}
-			});
-		}
-		const id = (host && shortIdFromHost(host)) || getCurrentShortId();
-		if (!id || id === 'short') return;
-		resizePinnedShortId = id;
-		if (host instanceof HTMLElement) {
-			resizePinnedHost = host;
-			resizePinnedSequenceId = host.getAttribute('id') || '';
-			resizePinnedIndex = idx;
-		}
-	}
-
-	function rememberLiveShortPin(force = false) {
-		if (!isExplicitShortNav()) {
-			if (urlLockShortId && urlLockShortId !== 'short') resizePinnedShortId = urlLockShortId;
-			return;
-		}
-		if (
-			!force &&
-			isResizeHoldRunning() &&
-			resizePinnedShortId &&
-			resizePinnedShortId !== 'short'
-		) {
-			return;
-		}
-		captureVisibleShortPin();
-		commitUrlLockFromLocation();
-	}
-
-	function findPinnedSequenceHost(pin) {
-		const items = listSequenceItems();
-		if (pin && pin !== 'short') {
-			for (let i = 0; i < items.length; i++) {
-				const item = items[i];
-				const renderer = item.querySelector('ytd-reel-video-renderer') || item;
-				if (shortIdFromHost(item) === pin || rendererHasShortId(renderer, pin)) {
-					resizePinnedHost = item;
-					resizePinnedIndex = i;
-					return item;
-				}
-			}
-			const byShort = findSequenceHostForShortId(pin);
-			if (byShort instanceof HTMLElement) {
-				resizePinnedHost = byShort;
-				return byShort;
-			}
-		}
-		if (resizePinnedIndex >= 0 && items[resizePinnedIndex] instanceof HTMLElement) {
-			resizePinnedHost = items[resizePinnedIndex];
-			return items[resizePinnedIndex];
-		}
-		if (resizePinnedHost instanceof HTMLElement && resizePinnedHost.isConnected) {
-			return resizePinnedHost;
-		}
-		if (!resizePinnedSequenceId) return null;
-		let safe = resizePinnedSequenceId;
-		try {
-			safe = CSS.escape(resizePinnedSequenceId);
-		} catch (_) {}
-		const bySlot = document.querySelector(
-			`.reel-video-in-sequence-new[id="${safe}"], .reel-video-in-sequence[id="${safe}"]`
-		);
-		return bySlot instanceof HTMLElement ? bySlot : null;
-	}
-
-	function resumePinnedShortMedia(host, pin) {
-		// Never auto-play. Space, click-to-pause, and media keys must stay in charge.
-		void host;
-		void pin;
-	}
-
-	function holdPinnedShortInView() {
-		if (resizeScrollGuard) return;
-		resizeScrollGuard = true;
-		try {
-			const pin = resizePinnedShortId || getCurrentShortId();
-			const host = findPinnedSequenceHost(pin);
-			if (host instanceof HTMLElement) centerShortsHostInScroller(host);
-			resumePinnedShortMedia(host, pin);
-		} finally {
-			resizeScrollGuard = false;
-		}
-	}
-
-	function setResizeLock(on) {
-		if (on) document.documentElement.setAttribute(RESIZE_LOCK_ATTR, '');
-		else document.documentElement.removeAttribute(RESIZE_LOCK_ATTR);
-	}
-
-	function startResizeHoldLoop() {
-		if (resizeHoldRaf) return;
-		resizeHoldRaf = requestAnimationFrame(() => {
-			resizeHoldRaf = 0;
-			holdPinnedShortInView();
-		});
-	}
-
-	function stopResizeHoldLoop() {
-		if (resizeHoldRaf) {
-			cancelAnimationFrame(resizeHoldRaf);
-			resizeHoldRaf = 0;
-		}
-	}
-
-	function beginResizeLock() {
-		lastObservedShortsSize = shortsViewportSizeKey();
-		if (urlLockShortId && urlLockShortId !== 'short') resizePinnedShortId = urlLockShortId;
-		setResizeLock(true);
-		noteLayoutSettling(WINDOW_RESIZE_HOLD_MS);
-		ensureShortsResizeObserver();
-		ensureWindowBoxObserver();
-		startResizeHoldLoop();
-		holdPinnedShortInView();
-	}
-
-	function endResizeLock() {
-		const pin = urlLockShortId || resizePinnedShortId;
-		if (pin && pin !== 'short') resizePinnedShortId = pin;
-		holdPinnedShortInView();
-		const stillOff = !!(pin && pin !== 'short' && getCurrentShortId() !== pin);
-		if (stillOff && resizeUnlockTries < 20 && !isExplicitShortNav()) {
-			resizeUnlockTries += 1;
-			startResizeHoldLoop();
-			noteLayoutSettling(180);
-			return;
-		}
-		resizeUnlockTries = 0;
-		restorePinnedShortAfterResize();
-		stopResizeHoldLoop();
-		setResizeLock(false);
-		const recorrect = () => {
-			if (isExplicitShortNav()) return;
-			holdPinnedShortInView();
-			restorePinnedShortAfterResize();
-		};
-		requestAnimationFrame(() => {
-			recorrect();
-			requestAnimationFrame(recorrect);
-		});
-		scheduleMountWork();
-	}
-
-	function ensureShortsResizeObserver() {
-		if (typeof ResizeObserver !== 'function') return;
-		if (!shortsResizeObserver) {
-			shortsResizeObserver = new ResizeObserver(() => {
-				syncWindowSnapLock();
-				const key = shortsViewportSizeKey();
-				if (!shortsResizeReady) {
-					shortsResizeReady = true;
-					lastObservedShortsSize = key;
-					return;
-				}
-				if (key === lastObservedShortsSize) return;
-				lastObservedShortsSize = key;
-				if (isLayoutSettling() && isRecentWindowResize()) {
-					holdPinnedShortInView();
-					startResizeHoldLoop();
-				}
-			});
-		}
-		const sc = getShortsScrollContainer();
-		const inner = document.querySelector('#shorts-inner-container');
-		if (sc instanceof HTMLElement) shortsResizeObserver.observe(sc);
-		if (inner instanceof HTMLElement) shortsResizeObserver.observe(inner);
-	}
-
-	function ensureWindowBoxObserver() {
-		if (typeof ResizeObserver !== 'function') return;
-		if (windowBoxObserver) return;
-		windowBoxObserver = new ResizeObserver(() => syncWindowSnapLock());
-		windowBoxObserver.observe(document.documentElement);
 	}
 
 	function isOnShortsPath() {
@@ -2268,19 +1876,25 @@
 	}
 
 	function revealActiveNativeRail() {
-		if (!isOnShortsPath()) return;
+		if (!isOnShortsPath()) {
+			restoreNativeRailVisibilityOverrides(new Set());
+			return;
+		}
 		const preferred = getPreferredActiveReelRenderer();
 		const keep =
 			preferred ||
-			document.querySelector('ytd-reel-video-renderer[extract-overlay], ytd-reel-video-renderer');
-		if (!(keep instanceof HTMLElement)) return;
+			bestVisibleReelRenderer(querySelectorAllDeep('ytd-reel-video-renderer'));
+		if (!(keep instanceof HTMLElement)) {
+			restoreNativeRailVisibilityOverrides(new Set());
+			return;
+		}
 		const overlayRoot =
-			keep.querySelector('#experiment-overlay') ||
-			keep.querySelector('ytd-reel-player-overlay-renderer')?.closest('#experiment-overlay') ||
-			keep.querySelector('ytd-reel-player-overlay-renderer');
-		document.querySelectorAll('#experiment-overlay').forEach((el) => {
+			querySelectorDeep('#experiment-overlay', keep) ||
+			closestAcrossShadow(querySelectorDeep('ytd-reel-player-overlay-renderer', keep), '#experiment-overlay') ||
+			querySelectorDeep('ytd-reel-player-overlay-renderer', keep);
+		querySelectorAllDeep('#experiment-overlay').forEach((el) => {
 			if (!(el instanceof HTMLElement)) return;
-			const isKeep = el === overlayRoot || keep.contains(el);
+			const isKeep = el === overlayRoot || keep.contains(el) || overlayRoot?.contains(el);
 			if (isKeep) {
 				el.style.setProperty('opacity', '1', 'important');
 				el.style.setProperty('pointer-events', 'none', 'important');
@@ -2296,6 +1910,30 @@
 		const hosts = [bar, bar && bar.parentElement].filter(
 			(el) => el instanceof HTMLElement
 		);
+		const visibleAncestors = new Set();
+		let ancestor = bar;
+		while (ancestor && ancestor !== keep) {
+			if (ancestor instanceof HTMLElement) {
+				const saved = nativeRailVisibilityOverrides.get(ancestor);
+				if (saved || getComputedStyle(ancestor).visibility === 'hidden') {
+					if (!saved) {
+						nativeRailVisibilityOverrides.set(ancestor, {
+							value: ancestor.style.getPropertyValue('visibility'),
+							priority: ancestor.style.getPropertyPriority('visibility'),
+						});
+					}
+					ancestor.style.setProperty('visibility', 'visible', 'important');
+					visibleAncestors.add(ancestor);
+				}
+			}
+			if (ancestor.parentElement) {
+				ancestor = ancestor.parentElement;
+			} else {
+				const root = ancestor.getRootNode();
+				ancestor = root instanceof ShadowRoot ? root.host : null;
+			}
+		}
+		restoreNativeRailVisibilityOverrides(visibleAncestors);
 		hosts.forEach((el) => {
 			el.style.setProperty('visibility', 'visible', 'important');
 			el.style.setProperty('opacity', '1', 'important');
@@ -2311,17 +1949,35 @@
 		});
 	}
 
+	function restoreNativeRailVisibilityOverrides(keep) {
+		nativeRailVisibilityOverrides.forEach((saved, el) => {
+			if (keep.has(el)) return;
+			if (!(el instanceof HTMLElement)) {
+				nativeRailVisibilityOverrides.delete(el);
+				return;
+			}
+			if (saved.value) el.style.setProperty('visibility', saved.value, saved.priority);
+			else el.style.removeProperty('visibility');
+			nativeRailVisibilityOverrides.delete(el);
+		});
+	}
+
 	function isElementVisiblyOnScreen(el) {
 		if (!(el instanceof Element)) return false;
 		const r = el.getBoundingClientRect();
 		if (r.width < 4 || r.height < 4) return false;
-		if (r.bottom <= 0 || r.top >= window.innerHeight) return false;
-		if (r.right <= 0 || r.left >= window.innerWidth) return false;
+		const visibleHeight = Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 0);
+		const visibleWidth = Math.min(r.right, window.innerWidth) - Math.max(r.left, 0);
+		// A few visible pixels can be the neighboring reel entering the viewport
+		// during scroll snap. Do not treat that sliver as the active Short when
+		// choosing which rail to inspect.
+		if (visibleHeight < Math.min(96, r.height * 0.35)) return false;
+		if (visibleWidth < Math.min(48, r.width * 0.35)) return false;
 		return true;
 	}
 
 	function rowRenderer(row) {
-		return row instanceof Element ? row.closest('ytd-reel-video-renderer') : null;
+		return row instanceof Element ? closestAcrossShadow(row, 'ytd-reel-video-renderer') : null;
 	}
 
 	function scopeHasActionBar(scope) {
@@ -2367,8 +2023,8 @@
 			if (overlayIsUsableScope(overlay)) return overlay;
 		}
 
-		const extracted = document.querySelector('reel-action-bar-view-model');
-		if (extracted instanceof HTMLElement && !isInsideCommentsPanel(extracted)) {
+		for (const extracted of querySelectorAllDeep('reel-action-bar-view-model')) {
+			if (!(extracted instanceof HTMLElement) || isInsideCommentsPanel(extracted)) continue;
 			const r = extracted.getBoundingClientRect();
 			if (isUsableActionAnchorRect(r) || (r.width >= 24 && r.height >= 80 && r.left >= 72)) {
 				return extracted;
@@ -2376,8 +2032,10 @@
 		}
 
 		const overlay =
-			document.querySelector('ytd-reel-player-overlay-renderer') ||
-			querySelectorDeep('ytd-reel-player-overlay-renderer', document.documentElement);
+			querySelectorDeep(
+				'ytd-reel-player-overlay-renderer, ytd-reel-player-overlay-renderer-cow, yt-reel-player-overlay-view-model',
+				document.documentElement
+			);
 		if (overlayIsUsableScope(overlay)) return overlay;
 
 		const sp =
@@ -2415,7 +2073,7 @@
 	function neutralizeOverlaysByHitTest() {
 		if (!speedRootEl || !speedRootEl.isConnected) return;
 		const targets = [speedRootEl];
-		const panel = speedRootEl.querySelector('.yts-toolbox-panel');
+		const panel = speedRootEl.shadowRoot?.querySelector('.yts-toolbox-panel');
 		if (panel instanceof HTMLElement && speedRootEl.dataset.open === '1') {
 			targets.push(panel);
 		}
@@ -2514,28 +2172,36 @@
 	function findActionRowElement(inner) {
 		if (!inner) return null;
 		const byItem =
-			inner.closest('reel-action-bar-item-view-model') ||
-			inner.closest('reel-action-bar-item-renderer');
+			closestAcrossShadow(inner, 'reel-action-bar-item-view-model') ||
+			closestAcrossShadow(inner, 'reel-action-bar-item-renderer');
 		if (byItem && byItem.parentElement) return byItem;
 
 		const bar = getReelActionBarFromNode(inner);
 		if (bar) {
-			const tagged = inner.closest(
+			const tagged = closestAcrossShadow(
+				inner,
 				'like-button-view-model, dislike-button-view-model, comments-button-view-model, button-view-model'
 			);
 			if (tagged instanceof HTMLElement) {
 				let row = tagged;
-				while (row.parentElement && row.parentElement !== bar) {
-					row = row.parentElement;
+				for (let depth = 0; depth < 32 && row !== bar; depth++) {
+					if (row.parentElement === bar) return row;
+					if (row.parentElement) {
+						row = row.parentElement;
+						continue;
+					}
+					const root = row.getRootNode();
+					if (!(root instanceof ShadowRoot)) break;
+					if (root.host === bar) return row;
+					row = root.host;
 				}
-				if (row.parentElement === bar) return row;
 			}
 		}
 
 		// Never walk above the action rail itself; otherwise a flex-column
 		// ancestor of the whole overlay could be picked and we would inject
 		// the toolbox into the wrong container.
-		const actionsBoundary = bar || inner.closest('#actions');
+		const actionsBoundary = bar || closestAcrossShadow(inner, '#actions');
 		let n = inner;
 		for (let depth = 0; depth < 28 && n; depth++) {
 			const p = n.parentElement;
@@ -2555,26 +2221,42 @@
 	}
 
 	function isRootDockedBeforeRow(root, row) {
-		return isToolboxOnBodyHost(root) && row instanceof Element;
+		if (!(root instanceof HTMLElement) || !(row instanceof Element)) return false;
+		const actionBar = getReelActionBarFromNode(row);
+		const parent =
+			actionBar?.shadowRoot && root.parentNode === actionBar.shadowRoot
+				? actionBar.shadowRoot
+				: actionBar;
+		if (!actionBar || root.parentNode !== parent) return false;
+		const reverse = getComputedStyle(actionBar).flexDirection === 'column-reverse';
+		return reverse
+			? parent.lastElementChild === root
+			: parent.firstElementChild === root;
 	}
 
 	function attachRootAtRow(root, row) {
-		const bodyHost = root instanceof HTMLElement && root.dataset.ytsFixedHost === '1';
-		if (!bodyHost && !canAttachToolboxToRow(row)) return false;
+		if (!canAttachToolboxToRow(row)) return false;
 		if (row && (row.contains(root) || root.contains(row))) return false;
-		if (isToolboxOnBodyHost(root)) {
-			applyToolboxPanelOpenState(root);
-			return true;
-		}
+		const actionBar = getReelActionBarFromNode(row);
+		const rowRoot = row.getRootNode();
+		const parent =
+			rowRoot instanceof ShadowRoot && actionBar && rowRoot.host === actionBar
+				? rowRoot
+				: actionBar || row.parentElement;
+		if (!(parent instanceof Node)) return false;
 		mutatingDom = true;
 		try {
-			// Host on document.body so the toolbox can paint above YouTube's
-			// comments panel (a sibling of the player, not of the action rail).
-			if (root.parentElement !== document.body) {
-				document.body.appendChild(root);
-			}
-			root.dataset.ytsFixedHost = '1';
+			// Join the native action column and occupy its first slot. This stays
+			// stable when YouTube inserts account-specific actions such as Gemini.
+			const flexDirection =
+				parent instanceof Element ? getComputedStyle(parent).flexDirection : 'column';
+			const insertBefore = flexDirection === 'column-reverse' ? null : parent.firstElementChild;
+			parent.insertBefore(root, insertBefore);
+			delete root.dataset.ytsFixedHost;
 			delete root.dataset.ytsCommentsLift;
+			root.style.setProperty('position', 'relative', 'important');
+			root.style.setProperty('left', '0px', 'important');
+			root.style.setProperty('top', '0px', 'important');
 			applyToolboxPanelOpenState(root);
 		} finally {
 			mutatingDom = false;
@@ -2643,7 +2325,6 @@
 	function ensureSpeedAnchorIntact() {
 		if (!speedRootEl || !speedRootEl.isConnected) return;
 		if (isToolboxLiftedAboveComments()) return;
-		if (isLayoutSettling()) return;
 		if (!toolboxIsOnCurrentShort()) {
 			forceToolboxOntoCurrentShort();
 			return;
@@ -3013,9 +2694,6 @@
 		cleanupOrphanLiftSlots();
 		if (speedRootEl instanceof HTMLElement) delete speedRootEl.dataset.ytsCommentsLift;
 		clearRaisedActionRailStyles();
-		if (isLayoutSettling()) {
-			return toolboxIsOnCurrentShort();
-		}
 		return forceToolboxOntoCurrentShort();
 	}
 
@@ -3357,7 +3035,6 @@
 	}
 
 	function captureCommentsBeforeNavigate() {
-		if (isLayoutSettling() && resizePinnedShortId) return;
 		if (!(commentsWantedOpen || isCommentsPanelOpen())) return;
 		commentsWantedOpen = true;
 		commentsSnapshotBeforeAdvance = snapshotCommentsPanel() || lastSettledCommentsSnapshot;
@@ -3368,7 +3045,6 @@
 	}
 
 	function markCommentsNeedFollow() {
-		if (isLayoutSettling()) return;
 		if (!(commentsWantedOpen || isCommentsPanelOpen())) return;
 		commentsWantedOpen = true;
 		pendingCommentsRefreshAfterAdvance = true;
@@ -3393,7 +3069,6 @@
 	}
 
 	function refreshCommentsPanelForCurrentShort() {
-		if (isLayoutSettling() && !isExplicitShortNav() && !isAutoAdvanceNavigation()) return;
 		if (!pendingCommentsRefreshAfterAdvance) return;
 		if (commentsRefreshInProgress) return;
 		if (autoAdvanceSourceShortId && getCurrentShortId() === autoAdvanceSourceShortId) return;
@@ -3508,12 +3183,12 @@
 		if (!(speedRootEl && speedRootEl.isConnected)) return false;
 		if (isToolboxOnBodyHost()) return isOnShortsPath();
 		if (!isInReelActionUi(speedRootEl)) return false;
-		const rootRenderer = speedRootEl.closest('ytd-reel-video-renderer');
+		const rootRenderer = closestAcrossShadow(speedRootEl, 'ytd-reel-video-renderer');
 		if (rootRenderer && rendererMatchesCurrentShort(rootRenderer)) return true;
 		if (rootRenderer && isLikelyActiveReelRenderer(rootRenderer) && !hasUrlMatchedReelRenderer()) {
 			return true;
 		}
-		if (rootRenderer && document.querySelectorAll('ytd-reel-video-renderer').length === 1) {
+		if (rootRenderer && querySelectorAllDeep('ytd-reel-video-renderer').length === 1) {
 			return true;
 		}
 		return false;
@@ -3937,25 +3612,10 @@
 	}
 
 	function onDocumentKeydown(e) {
-		if (!(e instanceof KeyboardEvent)) return;
+		if (!(e instanceof KeyboardEvent) || !e.isTrusted) return;
 		const k = e.key;
 		if (k === 'Escape' && isCommentsPanelOpen()) {
 			noteCommentsDismissedByUser();
-		}
-		if (
-			k === 'ArrowUp' ||
-			k === 'ArrowDown' ||
-			k === 'MediaTrackNext' ||
-			k === 'MediaTrackPrevious'
-		) {
-			if (
-				(k === 'ArrowUp' || k === 'ArrowDown') &&
-				(eventTouchesCommentsUi(e) || isTypingTarget(e.target))
-			) {
-				return;
-			}
-			noteExplicitShortNav();
-			noteManualShortNavigation();
 		}
 		if (leftRightVolumeEnabled && (k === 'ArrowLeft' || k === 'ArrowRight')) {
 			// Browsers emit repeat keydown events while held, so both a tap and a
@@ -3971,164 +3631,14 @@
 		}
 	}
 
-	function isShortsNavControl(el) {
-		if (!(el instanceof Element)) return false;
-		if (el.closest(`#${ROOT_ID}`)) return false;
-		if (isInsideCommentsPanel(el)) return false;
-		const control = el.closest(
-			'#navigation-button-down, #navigation-button-up, [data-shorts-navigation], [data-navigation-direction]'
-		);
-		if (control) return true;
-		const button = el.closest('button, yt-icon-button, tp-yt-paper-icon-button, [role="button"]');
-		if (!button) return false;
-		// The current Shorts markup is not stable: some releases keep the old IDs,
-		// while others expose only an accessible label inside the navigation tray.
-		// Restrict label matching to the Shorts surface so unrelated page buttons
-		// cannot unlock the resize pin.
-		const shortsSurface = button.closest(
-			'ytd-shorts, #shorts-container, #shorts-player, .navigation-container'
-		);
-		if (!shortsSurface) return false;
-		if (button.closest('.navigation-container')) return true;
-		const label = [
-			button.getAttribute('aria-label'),
-			button.getAttribute('title'),
-			button.textContent,
-		]
-			.filter(Boolean)
-			.join(' ')
-			.replace(/\s+/g, ' ')
-			.trim();
-		return /(?:next|previous|prev(?:ious)? video|next video|上一(?:部|支|則|个|個)|下一(?:部|支|則|个|個)|前の動画|次の動画|이전 동영상|다음 동영상)/i.test(
-			label
-		);
-	}
-
-	function isDontRecommendChannelAction(e) {
-		const menuItemSelector =
-			'[role="menuitem"], yt-list-item-view-model, ytd-menu-service-item-renderer, tp-yt-paper-item, ytd-menu-navigation-item-renderer';
-		for (const el of eventPathElements(e)) {
-			if (el.closest(`#${ROOT_ID}`)) return false;
-			const item = el.closest(menuItemSelector);
-			if (!(item instanceof HTMLElement)) continue;
-			const label = [
-				item.getAttribute('aria-label'),
-				item.getAttribute('title'),
-				item.textContent,
-			]
-				.filter(Boolean)
-				.join(' ')
-				.replace(/\s+/g, ' ')
-				.trim();
-			if (
-				/(不要(?:向我)?推薦(?:這個|这个)?頻道|不再推薦(?:這個|这个)?頻道|不要(?:向我)?推荐(?:这个)?频道|不再推荐(?:这个)?频道|don't recommend (?:this )?channel|do not recommend (?:this )?channel|このチャンネルをおすすめに表示しない)/i.test(
-					label
-				)
-			) {
-				return true;
-			}
-		}
-		return false;
-	}
-
-	function onManualShortNavGesture(e) {
-		if (!e) return;
-		if (e.type === 'wheel') {
-			if (isBrowserZoomWheel(e)) return;
-			if (Math.abs(e.deltaY || 0) < 8) return;
-			if (Math.abs(e.deltaX || 0) > Math.abs(e.deltaY || 0)) return;
-			if (eventTouchesCommentsUi(e)) {
-				if (urlLockShortId) enforceUrlLock();
-				return;
-			}
-			if (!eventTouchesShortsFeedNav(e)) return;
-			noteExplicitShortNav();
-			noteManualShortNavigation();
-			return;
-		}
-		if (e.type === 'pointerup' || e.type === 'pointercancel') {
-			const start = pendingShortsSwipe;
-			pendingShortsSwipe = null;
-			if (
-				e.type === 'pointerup' &&
-				start &&
-				start.pointerId === e.pointerId &&
-				Math.abs(e.clientY - start.y) >= 28 &&
-				Math.abs(e.clientY - start.y) > Math.abs(e.clientX - start.x)
-			) {
-				noteExplicitShortNav();
-				noteManualShortNavigation();
-			}
-			return;
-		}
-		if (e.type === 'click' || e.type === 'pointerdown') {
-			const t = e.target;
-			if (!(t instanceof Element)) return;
-			// This menu action removes the current Short and YouTube advances to a
-			// replacement. Treat only this user-confirmed action as navigation, so
-			// the resize/video lock does not restore the rejected Short.
-			if (isDontRecommendChannelAction(e)) {
-				noteExplicitShortNav();
-				return;
-			}
-			if (isShortsNavControl(t)) {
-				noteExplicitShortNav();
-				noteManualShortNavigation();
-				return;
-			}
-			if (
-				e.type === 'pointerdown' &&
-				e.isPrimary !== false &&
-				eventTouchesShortsFeedNav(e) &&
-				!eventTouchesCommentsUi(e)
-			) {
-				pendingShortsSwipe = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
-			}
-		}
-	}
-
-	function onBrowserHistoryShortNavigation() {
-		if (!location.pathname.startsWith('/shorts/')) return;
-		noteExplicitShortNav();
-		noteManualShortNavigation();
-	}
-
-	function onExplicitShortNavSignal() {
-		noteExplicitShortNav();
-		noteManualShortNavigation();
-	}
-
 	function onYtNavigateStart() {
-		syncWindowSnapLock();
-		if (!isExplicitShortNav()) {
-			enforceUrlLock();
-			return;
-		}
-		abortResizeLockForUserNav();
 		captureCommentsBeforeNavigate();
-		rememberLiveShortPin(true);
 	}
 
 	function onShortNavigateFinish() {
-		syncWindowSnapLock();
-		if (!isExplicitShortNav()) {
-			enforceUrlLock();
-			startNativeAnchorFollow(720);
-			return;
-		}
-		abortResizeLockForUserNav();
-		commitUrlLockFromLocation();
-		rememberLiveShortPin(true);
 		noteCurrentShortForComments();
 		startNativeAnchorFollow(720);
 		startBootstrapRetries();
-		if (!isAutoAdvanceNavigation()) {
-			noteManualShortNavigation();
-		} else {
-			autoAdvanceMountNotBefore = 0;
-			schedulePostAdvanceRepair();
-			scheduleMountWork();
-		}
 		if (pendingCommentsRefreshAfterAdvance || commentsWantedOpen || isCommentsPanelOpen()) {
 			if (commentsWantedOpen || isCommentsPanelOpen()) {
 				commentsWantedOpen = true;
@@ -4145,10 +3655,6 @@
 	}
 
 	function onYtPageDataUpdated() {
-		if (!isExplicitShortNav()) {
-			enforceUrlLock();
-			return;
-		}
 		noteCurrentShortForComments();
 		if (pendingCommentsRefreshAfterAdvance) {
 			startCommentsFollowLoop();
@@ -4161,52 +3667,61 @@
 	function togglePanel() {
 		toolboxPanelWantedOpen = !toolboxPanelWantedOpen;
 		applyToolboxPanelOpenState();
+		if (toolboxPanelWantedOpen) {
+			liftToolboxForOpenPanel();
+		} else {
+			syncToolboxLayoutWithNative();
+		}
 		syncToolboxAboveComments();
 	}
 
-	function restorePinnedShortAfterResize() {
-		const pin = urlLockShortId || resizePinnedShortId;
-		const host = findPinnedSequenceHost(pin);
-		if (host instanceof HTMLElement) centerShortsHostInScroller(host);
-		if (!pin || pin === 'short' || getCurrentShortId() === pin) return;
-		if (restorePinnedRetryTimer) return;
-		restorePinnedRetryTimer = setTimeout(() => {
-			restorePinnedRetryTimer = null;
-			const again = findPinnedSequenceHost(pin);
-			if (again instanceof HTMLElement) centerShortsHostInScroller(again);
-			resumePinnedShortMedia(again, pin);
-			scheduleMountWork();
-		}, 160);
+	function liftToolboxForOpenPanel() {
+		const root = speedRootEl;
+		if (!(root instanceof HTMLElement) || !root.isConnected) return;
+		const rect = root.getBoundingClientRect();
+		if (root.parentElement !== document.body) {
+			mutatingDom = true;
+			try {
+				document.body.appendChild(root);
+			} finally {
+				mutatingDom = false;
+			}
+		}
+		root.dataset.ytsFixedHost = '1';
+		root.style.setProperty('position', 'fixed', 'important');
+		root.style.setProperty('left', `${rect.left}px`, 'important');
+		root.style.setProperty('top', `${rect.top}px`, 'important');
+		root.style.setProperty('width', `${rect.width}px`, 'important');
+		root.style.setProperty('height', `${rect.height}px`, 'important');
+		root.style.setProperty('z-index', TOOLBOX_TOP_Z, 'important');
+		root.style.setProperty('pointer-events', 'auto', 'important');
+		applyToolboxPanelOpenState(root);
 	}
 
 	function onWindowLayoutSettle() {
-		syncWindowSnapLock();
-	}
-
-	function onDocumentScrollForToolbox() {
-		syncWindowSnapLock();
-		if (!isExplicitShortNav() && urlLockShortId) {
-			enforceUrlLock();
+		requestAnimationFrame(() => {
 			if (!(speedRootEl && speedRootEl.isConnected)) return;
 			syncToolboxLayoutWithNative();
-			return;
-		}
-		rememberLiveShortPin();
+			syncToolboxAboveComments();
+		});
+	}
+
+	function onDocumentScrollForToolbox(e) {
 		if (!(speedRootEl && speedRootEl.isConnected)) return;
-		syncToolboxLayoutWithNative();
+		// A docked toolbox scrolls with YouTube's action rail. Re-measuring and
+		// rewriting its layout for every scroll event stalls the native snap
+		// animation; only floating/comment layouts need per-scroll correction.
+		if (
+			isToolboxOnBodyHost(speedRootEl) ||
+			speedRootEl.parentElement === document.body ||
+			isCommentsPanelOpen()
+		) syncToolboxLayoutWithNative();
 	}
 
 	document.addEventListener('click', onDocumentClick, true);
 	document.addEventListener('click', onCommentsUiPointer, true);
-	document.addEventListener('click', onManualShortNavGesture, true);
 	document.addEventListener('pointerdown', onCommentsUiPointer, true);
-	document.addEventListener('bm-youtube-explicit-short-nav', onExplicitShortNavSignal, true);
 	document.addEventListener('keydown', onDocumentKeydown, true);
-	document.addEventListener('wheel', onManualShortNavGesture, { capture: true, passive: true });
-	document.addEventListener('pointerdown', onManualShortNavGesture, true);
-	document.addEventListener('pointerup', onManualShortNavGesture, true);
-	document.addEventListener('pointercancel', onManualShortNavGesture, true);
-	window.addEventListener('popstate', onBrowserHistoryShortNavigation, true);
 	document.addEventListener('scroll', onDocumentScrollForToolbox, { capture: true, passive: true });
 	window.addEventListener('resize', onWindowLayoutSettle, { capture: true, passive: true });
 	window.addEventListener('orientationchange', onWindowLayoutSettle, { capture: true, passive: true });
@@ -4257,14 +3772,14 @@
 	function getActiveShortsVideo() {
 		const preferred = getPreferredActiveReelRenderer();
 		if (preferred instanceof HTMLElement) {
-			const preferredVideo = preferred.querySelector('video');
+			const preferredVideo = querySelectorDeep('video', preferred);
 			if (preferredVideo instanceof HTMLVideoElement) return preferredVideo;
 		}
 
 		const activeRendererVideo =
-			document.querySelector('ytd-reel-video-renderer[is-active] video') ||
-			document.querySelector('ytd-reel-video-renderer[reel-active] video') ||
-			document.querySelector("ytd-reel-video-renderer[aria-hidden='false'] video");
+			querySelectorDeep('ytd-reel-video-renderer[is-active] video') ||
+			querySelectorDeep('ytd-reel-video-renderer[reel-active] video') ||
+			querySelectorDeep("ytd-reel-video-renderer[aria-hidden='false'] video");
 		if (activeRendererVideo instanceof HTMLVideoElement) {
 			return activeRendererVideo;
 		}
@@ -4273,7 +3788,7 @@
 		const seen = new Set();
 		const candidates = [];
 		for (const sel of selectors) {
-			document.querySelectorAll(sel).forEach((v) => {
+			querySelectorAllDeep(sel).forEach((v) => {
 				if (v instanceof HTMLVideoElement && !seen.has(v)) {
 					seen.add(v);
 					candidates.push(v);
@@ -4296,7 +3811,7 @@
 			const centerDist = Math.abs(centerX - vw / 2) / vw;
 			const centerDistY = Math.abs(centerY - vh / 2) / vh;
 			let score = area * (1 - centerDist * 0.35) * (1 - centerDistY * 0.2);
-			const renderer = v.closest('ytd-reel-video-renderer');
+			const renderer = closestAcrossShadow(v, 'ytd-reel-video-renderer');
 			if (renderer instanceof HTMLElement) {
 				if (renderer.hasAttribute('is-active') || renderer.hasAttribute('reel-active')) {
 					score *= 2.2;
@@ -4354,7 +3869,7 @@
 		const id = getCurrentShortId();
 		const v = getActiveShortsVideo();
 		const renderer =
-			(v instanceof HTMLVideoElement && v.closest('ytd-reel-video-renderer')) ||
+			(v instanceof HTMLVideoElement && closestAcrossShadow(v, 'ytd-reel-video-renderer')) ||
 			document.querySelector('ytd-reel-video-renderer[is-active]') ||
 			document.querySelector('ytd-reel-video-renderer[reel-active]');
 		const rid =
@@ -4415,30 +3930,7 @@
 		}, delay);
 	}
 
-	function noteManualShortNavigation() {
-		if (isAutoAdvanceNavigation()) return;
-		noteExplicitShortNav();
-		playThroughCount = 0;
-		lastPlayCompletionAt = 0;
-		clearActiveVideoPlayCursor();
-		const now = getCurrentShortId();
-		if (now && now !== 'short' && now !== urlLockShortId) {
-			rememberLiveShortPin(true);
-			noteCurrentShortForComments();
-		}
-		const id = getActiveShortKey();
-		if (id !== playThroughShortId) {
-			playThroughShortId = id;
-			remountToolboxToCurrentShort();
-		}
-	}
-
 	function syncPlayThroughShortId() {
-		if (!isExplicitShortNav() && urlLockShortId && getCurrentShortId() !== urlLockShortId) {
-			enforceUrlLock();
-			return;
-		}
-		if (isLayoutSettling() && !isExplicitShortNav()) return;
 		if (shouldDeferAutoAdvanceMount()) {
 			scheduleDeferredAutoAdvanceMount();
 			return;
@@ -4473,11 +3965,6 @@
 		autoAdvancePendingUntil = now + 2500;
 		autoAdvanceSourceShortId = getCurrentShortId();
 		autoAdvanceMountNotBefore = now + 120;
-		// Mark and release before reading any resize state. The navigation must
-		// win over a concurrently settling window so the live player can move to
-		// YouTube's next sequence slot without our scroll correction intervening.
-		abortResizeLockForUserNav();
-		applyWindowSizeChange();
 		// Remember open comments so we can reload them for the next Short (not leave them closed).
 		pendingCommentsRefreshAfterAdvance = commentsWantedOpen || isCommentsPanelOpen();
 		if (pendingCommentsRefreshAfterAdvance) commentsWantedOpen = true;
@@ -4527,9 +4014,6 @@
 	}
 
 	function onShortPlayCompleted() {
-		applyWindowSizeChange();
-		if (isResizeHoldRunning() && !isExplicitShortNav()) return;
-		if (isLayoutSettling() && !isExplicitShortNav()) return;
 		if (!autoNextEnabled) return;
 		if (framePlaybackEnabled || recordingSession || manualRecordSession || suspendSpeedSync) return;
 		const id = getCurrentShortId();
@@ -4548,11 +4032,7 @@
 	}
 
 	function onHookedVideoTimeUpdate(v) {
-		if (!(v instanceof HTMLVideoElement)) return;
-		if (isLayoutSettling()) {
-			v.dataset.bmPrevPlayTime = String(Number(v.currentTime) || 0);
-			return;
-		}
+		if (!autoNextEnabled || !(v instanceof HTMLVideoElement)) return;
 		const active = getActiveShortsVideo();
 		if (active && active !== v) return;
 		const dur = Number(v.duration);
@@ -4568,15 +4048,13 @@
 	function getActiveShortsRenderer() {
 		const v = getActiveShortsVideo();
 		if (v instanceof HTMLVideoElement) {
-			const byVideo = v.closest('ytd-reel-video-renderer');
+			const byVideo = closestAcrossShadow(v, 'ytd-reel-video-renderer');
 			if (byVideo instanceof HTMLElement) return byVideo;
 		}
-		const byAttr =
-			document.querySelector('ytd-reel-video-renderer[is-active]') ||
-			document.querySelector('ytd-reel-video-renderer[reel-active]');
-		if (byAttr instanceof HTMLElement) return byAttr;
-		const first = document.querySelector('ytd-reel-video-renderer');
-		return first instanceof HTMLElement ? first : null;
+		const visible = querySelectorAllDeep('ytd-reel-video-renderer').filter(
+			(r) => r instanceof HTMLElement && isElementVisiblyOnScreen(r)
+		);
+		return visible.find((r) => isLikelyActiveReelRenderer(r)) || bestVisibleReelRenderer(visible);
 	}
 
 	function buildDownloadFilename() {
@@ -4650,6 +4128,10 @@
 			const cleaned = cleanTitle(c);
 			if (cleaned && cleaned.length >= 2) {
 				titleByShortId.set(shortId, cleaned);
+				if (titleByShortId.size > MAX_TITLE_CACHE_ENTRIES) {
+					const oldestId = titleByShortId.keys().next().value;
+					titleByShortId.delete(oldestId);
+				}
 				return cleaned;
 			}
 		}
@@ -4822,8 +4304,11 @@
 			'position:fixed;left:-99999px;top:-99999px;width:1px;height:1px;opacity:0;pointer-events:none;';
 		hiddenVideo.src = recordUrl;
 		(document.body || document.documentElement).appendChild(hiddenVideo);
+		let capturedStream = null;
 
 		const cleanupHidden = () => {
+			stopMediaStreamTracks(capturedStream);
+			capturedStream = null;
 			try {
 				hiddenVideo.pause();
 			} catch (_) {}
@@ -4894,6 +4379,7 @@
 				hiddenVideo.defaultPlaybackRate = 1;
 				await hiddenVideo.play().catch(() => {});
 				const stream = hiddenVideo.captureStream();
+				capturedStream = stream;
 				const trackReady = await waitForVideoTrack(stream);
 				if (!trackReady) {
 					cleanupHidden();
@@ -4921,10 +4407,17 @@
 					return;
 				}
 
-				recorder.addEventListener('dataavailable', (ev) => {
-					if (ev.data && ev.data.size > 0) chunks.push(ev.data);
+				let stopForBufferLimit = null;
+				let collector = attachBoundedRecorderChunkCollector(recorder, chunks, () => {
+					if (stopForBufferLimit) stopForBufferLimit();
 				});
 				recorder.addEventListener('stop', () => {
+					collector.dispose();
+					if (collector.exceeded()) {
+						cleanupHidden();
+						fail('recording_buffer_limit');
+						return;
+					}
 					if (!chunks.length) {
 						cleanupHidden();
 						fail('no_recorded_chunks');
@@ -4948,6 +4441,7 @@
 						updateDownloadRecordingUi(0, false);
 					}
 				};
+				stopForBufferLimit = stop;
 
 				hiddenVideo.addEventListener('ended', stop, { once: true });
 				hiddenVideo.addEventListener('error', stop, { once: true });
@@ -4965,12 +4459,20 @@
 						const retryStream = hiddenVideo.captureStream();
 						const retryReady = await waitForVideoTrack(retryStream);
 						if (!retryReady) continue;
+						stopMediaStreamTracks(capturedStream);
+						capturedStream = retryStream;
 						recorder = createRecorder(retryStream);
 						if (!recorder) continue;
-						recorder.addEventListener('dataavailable', (ev) => {
-							if (ev.data && ev.data.size > 0) chunks.push(ev.data);
+						collector = attachBoundedRecorderChunkCollector(recorder, chunks, () => {
+							if (stopForBufferLimit) stopForBufferLimit();
 						});
 						recorder.addEventListener('stop', () => {
+							collector.dispose();
+							if (collector.exceeded()) {
+								cleanupHidden();
+								fail('recording_buffer_limit');
+								return;
+							}
 							if (!chunks.length) {
 								cleanupHidden();
 								fail('no_recorded_chunks_retry');
@@ -5024,7 +4526,7 @@
 
 	function updateDownloadRecordingUi(progressRatio, active) {
 		if (!(downloadBtnEl instanceof HTMLElement) || !downloadBtnEl.isConnected) {
-			const fallbackBtn = document.querySelector(`#${ROOT_ID} .yts-record-btn`);
+			const fallbackBtn = speedRootEl?.shadowRoot?.querySelector('.yts-record-btn');
 			downloadBtnEl = fallbackBtn instanceof HTMLElement ? fallbackBtn : null;
 			const fallbackPct = fallbackBtn ? fallbackBtn.querySelector('.yts-record-percent') : null;
 			downloadPercentEl = fallbackPct instanceof HTMLElement ? fallbackPct : null;
@@ -5047,7 +4549,7 @@
 
 	function hardResetDownloadRecordingUi() {
 		updateDownloadRecordingUi(0, false);
-		document.querySelectorAll(`#${ROOT_ID} .yts-record-btn`).forEach((el) => {
+		speedRootEl?.shadowRoot?.querySelectorAll('.yts-record-btn').forEach((el) => {
 			if (!(el instanceof HTMLElement)) return;
 			el.classList.remove('yts-recording-active');
 			const txt = el.querySelector('.yts-record-percent');
@@ -5098,6 +4600,7 @@
 
 			const stream = v.captureStream();
 			if (!stream.getVideoTracks().length) {
+				stopMediaStreamTracks(stream);
 				v.removeEventListener('ratechange', lock1x);
 				suspendSpeedSync = false;
 				applyToAllLikelyVideos();
@@ -5106,6 +4609,7 @@
 			}
 			const recorder = createRecorder(stream);
 			if (!recorder) {
+				stopMediaStreamTracks(stream);
 				v.removeEventListener('ratechange', lock1x);
 				suspendSpeedSync = false;
 				applyToAllLikelyVideos();
@@ -5114,15 +4618,22 @@
 			}
 
 			const chunks = [];
-			recorder.addEventListener('dataavailable', (ev) => {
-				if (ev.data && ev.data.size > 0) chunks.push(ev.data);
+			let stopForBufferLimit = null;
+			const collector = attachBoundedRecorderChunkCollector(recorder, chunks, () => {
+				if (stopForBufferLimit) stopForBufferLimit();
 			});
 			recorder.addEventListener('stop', () => {
+				collector.dispose();
+				stopMediaStreamTracks(stream);
 				v.removeEventListener('ratechange', lock1x);
 				suspendSpeedSync = false;
 				applyToAllLikelyVideos();
 				hardResetDownloadRecordingUi();
 				recordingSession = null;
+				if (collector.exceeded()) {
+					console.warn('[BM Shorts Toolbox]', `${t('downloadFailed')} (recording_buffer_limit)`);
+					return;
+				}
 				if (!chunks.length) {
 					console.warn('[BM Shorts Toolbox]', `${t('downloadFailed')} (no_recorded_chunks)`);
 					return;
@@ -5149,6 +4660,8 @@
 							try {
 								if (recorder.state !== 'inactive') recorder.stop();
 							} catch (_) {
+								stopMediaStreamTracks(stream);
+								collector.dispose();
 								v.removeEventListener('ratechange', lock1x);
 								suspendSpeedSync = false;
 								applyToAllLikelyVideos();
@@ -5160,6 +4673,8 @@
 					}
 					if (recorder.state !== 'inactive') recorder.stop();
 				} catch (_) {
+					stopMediaStreamTracks(stream);
+					collector.dispose();
 					v.removeEventListener('ratechange', lock1x);
 					suspendSpeedSync = false;
 					applyToAllLikelyVideos();
@@ -5167,11 +4682,14 @@
 					recordingSession = null;
 				}
 			};
+			stopForBufferLimit = stop;
 
 			v.addEventListener('ended', stop, { once: true });
 			try {
 				recorder.start(250);
 			} catch (_) {
+				stopMediaStreamTracks(stream);
+				collector.dispose();
 				v.removeEventListener('ratechange', lock1x);
 				suspendSpeedSync = false;
 				applyToAllLikelyVideos();
@@ -5279,6 +4797,7 @@
 				? new MediaStream(recordingSession.mediaStream.getTracks().map((t) => t.clone()))
 				: v.captureStream();
 		if (!stream.getVideoTracks().length) {
+			stopMediaStreamTracks(stream);
 			console.warn('[BM Shorts Toolbox]', t('downloadFailed'), '(manual_record_no_track)');
 			return;
 		}
@@ -5290,14 +4809,19 @@
 			try {
 				recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
 			} catch (_) {
+				stopMediaStreamTracks(stream);
 				console.warn('[BM Shorts Toolbox]', t('downloadFailed'), '(manual_record_recorder_failed)');
 				return;
 			}
 		}
-		recorder.addEventListener('dataavailable', (ev) => {
-			if (ev.data && ev.data.size > 0) chunks.push(ev.data);
-		});
+		const collector = attachBoundedRecorderChunkCollector(recorder, chunks, () => stopManualRecording());
 		recorder.addEventListener('stop', () => {
+			collector.dispose();
+			stopMediaStreamTracks(stream);
+			if (collector.exceeded()) {
+				console.warn('[BM Shorts Toolbox]', `${t('downloadFailed')} (recording_buffer_limit)`);
+				return;
+			}
 			if (!chunks.length) return;
 			const blob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' });
 			const url = URL.createObjectURL(blob);
@@ -5310,6 +4834,7 @@
 			recorder.start(250);
 		} catch (_) {
 			v.removeEventListener('ended', onEnded);
+			stopMediaStreamTracks(stream);
 			console.warn('[BM Shorts Toolbox]', t('downloadFailed'), '(manual_record_start_failed)');
 			return;
 		}
@@ -5424,13 +4949,24 @@
 		const root = document.createElement('div');
 		root.id = ROOT_ID;
 		root.setAttribute('data-open', toolboxPanelWantedOpen ? '1' : '0');
-		root.dataset.ytsFixedHost = '1';
 		root.dataset.bmYtsRole = TOOLBOX_ROLE;
 		root.toggleAttribute('data-expand-up', !panelExpandRightEnabled);
 		root.style.visibility = 'hidden';
 		root.style.setProperty('position', 'fixed', 'important');
 		root.style.setProperty('left', '-9999px', 'important');
 		root.style.setProperty('top', '-9999px', 'important');
+		// The current Shorts action rail is rendered inside YouTube custom
+		// elements. Keep the toolbox styles in our own shadow root so a change
+		// in the rail's shadow-DOM boundary cannot leave the fixed toolbox
+		// unstyled and parked off-screen.
+		const toolboxShadow = root.attachShadow({ mode: 'open' });
+		const toolboxStyle = document.createElement('style');
+		toolboxStyle.id = 'yts-speed-style';
+		toolboxStyle.textContent = SHADOW_STYLES.replaceAll(`#${ROOT_ID}`, ':host');
+		toolboxShadow.appendChild(toolboxStyle);
+		const toolboxContent = document.createElement('div');
+		toolboxContent.className = 'yts-toolbox-content';
+		toolboxShadow.appendChild(toolboxContent);
 
 		const mainItem = document.createElement('div');
 		mainItem.className = 'yts-tool-item yts-tool-item-main';
@@ -5562,8 +5098,8 @@
 		panel.appendChild(screenshotItem);
 		panel.appendChild(recordItem);
 		panel.appendChild(downloadItem);
-		root.appendChild(mainItem);
-		root.appendChild(panel);
+		toolboxContent.appendChild(mainItem);
+		toolboxContent.appendChild(panel);
 
 		if (!attachRootAtRow(root, anchorRow || document.body) || !root.isConnected) {
 			// Anchor vanished between lookup and insert; try again on the next pass
@@ -5571,7 +5107,6 @@
 			return false;
 		}
 
-		const rn = root.getRootNode();
 		speedRootEl = root;
 		applyToolboxPanelOpenState(root);
 		downloadBtnEl = downloadBtn;
@@ -5579,7 +5114,6 @@
 		recordBtnEl = recordBtn;
 		updateFramePlaybackUi();
 		updateSpeedUiLockedState();
-		ensureStylesInShadowRoot(rn);
 		syncToolboxLayoutWithNative();
 		syncSpeedUiWithNativeLike();
 		applyToAllLikelyVideos();
@@ -5592,7 +5126,7 @@
 			if (!(el instanceof HTMLElement)) return;
 			if (el === speedRootEl) return;
 			if (el.dataset.bmYtsRole === TOOLBOX_ROLE) return;
-			if (el.querySelector('.yts-toolbox-panel')) return;
+			if (el.shadowRoot?.querySelector('.yts-toolbox-panel')) return;
 			if (el.dataset.bmYtsRole === SPEED3X_ROLE) {
 				el.remove();
 				return;
@@ -5606,27 +5140,60 @@
 			videoObserver.disconnect();
 			videoObserver = null;
 		}
+		for (const [video, handlers] of hookedVideos) {
+			video.removeEventListener('ratechange', handlers.ratechange);
+			video.removeEventListener('loadedmetadata', handlers.scheduleReapply);
+			video.removeEventListener('playing', handlers.scheduleReapply);
+			video.removeEventListener('timeupdate', handlers.timeupdate);
+			video.removeEventListener('seeked', handlers.timeupdate);
+			video.removeEventListener('ended', handlers.ended);
+			delete video.dataset[VIDEO_HOOK_KEY];
+		}
+		hookedVideos.clear();
 	}
 
 	function hookVideoElement(v) {
 		if (!(v instanceof HTMLVideoElement) || v.dataset[VIDEO_HOOK_KEY]) return;
 		v.dataset[VIDEO_HOOK_KEY] = '1';
-		v.addEventListener('ratechange', () => {
-			if (suspendSpeedSync) return;
-			const want = getEffectivePlaybackRate();
-			if (Math.abs(v.playbackRate - want) > 0.01) {
-				applyPlaybackRateTo(v);
-			}
-		});
-		v.addEventListener('loadedmetadata', scheduleReapply);
-		v.addEventListener('playing', scheduleReapply);
-		v.addEventListener('timeupdate', () => onHookedVideoTimeUpdate(v));
-		v.addEventListener('seeked', () => onHookedVideoTimeUpdate(v));
-		v.addEventListener('ended', () => {
-			const active = getActiveShortsVideo();
-			if (active && active !== v) return;
-			onShortPlayCompleted();
-		});
+		const handlers = {
+			ratechange: () => {
+				if (suspendSpeedSync) return;
+				const want = getEffectivePlaybackRate();
+				if (Math.abs(v.playbackRate - want) > 0.01) applyPlaybackRateTo(v);
+			},
+			scheduleReapply,
+			timeupdate: () => onHookedVideoTimeUpdate(v),
+			ended: () => {
+				const active = getActiveShortsVideo();
+				if (active && active !== v) return;
+				onShortPlayCompleted();
+			},
+		};
+		hookedVideos.set(v, handlers);
+		v.addEventListener('ratechange', handlers.ratechange);
+		v.addEventListener('loadedmetadata', handlers.scheduleReapply);
+		v.addEventListener('playing', handlers.scheduleReapply);
+		v.addEventListener('timeupdate', handlers.timeupdate);
+		v.addEventListener('seeked', handlers.timeupdate);
+		v.addEventListener('ended', handlers.ended);
+	}
+
+	function unhookVideoElement(v) {
+		const handlers = hookedVideos.get(v);
+		if (!handlers) return;
+		v.removeEventListener('ratechange', handlers.ratechange);
+		v.removeEventListener('loadedmetadata', handlers.scheduleReapply);
+		v.removeEventListener('playing', handlers.scheduleReapply);
+		v.removeEventListener('timeupdate', handlers.timeupdate);
+		v.removeEventListener('seeked', handlers.timeupdate);
+		v.removeEventListener('ended', handlers.ended);
+		hookedVideos.delete(v);
+		delete v.dataset[VIDEO_HOOK_KEY];
+	}
+
+	function unhookAllVideosUnder(node) {
+		if (node instanceof HTMLVideoElement) unhookVideoElement(node);
+		if (node instanceof Element) node.querySelectorAll('video').forEach(unhookVideoElement);
 	}
 
 	function hookAllVideosUnder(root) {
@@ -5642,6 +5209,7 @@
 		hookAllVideosUnder(shortsRoot);
 		videoObserver = new MutationObserver((muts) => {
 			for (const m of muts) {
+				m.removedNodes.forEach(unhookAllVideosUnder);
 				m.addedNodes.forEach((n) => {
 					if (n instanceof HTMLVideoElement) hookVideoElement(n);
 					else if (n instanceof Element) hookAllVideosUnder(n);
@@ -5652,8 +5220,6 @@
 		videoObserver.observe(shortsRoot, {
 			childList: true,
 			subtree: true,
-			attributes: true,
-			attributeFilter: ['hidden', 'class', 'style'],
 		});
 	}
 
@@ -5765,24 +5331,29 @@
 			}
 		}
 
-		document.documentElement.addEventListener(
-			'pointerdown',
-			(e) => {
-				if (holdActive || pendingPointerId !== null) return;
-				if (!shouldStartHold(e)) return;
+		const onPointerDown = (e) => {
+			if (holdActive || pendingPointerId !== null) return;
+			if (!shouldStartHold(e)) return;
 
-				pendingPointerId = e.pointerId;
-				pendingTimer = setTimeout(() => {
-					pendingTimer = null;
-					activateHoldPlayback(pendingPointerId);
-				}, HOLD_ACTIVATE_MS);
+			pendingPointerId = e.pointerId;
+			pendingTimer = setTimeout(() => {
+				pendingTimer = null;
+				activateHoldPlayback(pendingPointerId);
+			}, HOLD_ACTIVATE_MS);
 
-				window.addEventListener('pointerup', onRelease, true);
-				window.addEventListener('pointercancel', onRelease, true);
-				window.addEventListener('blur', onBlurWhilePendingOrHold, false);
-			},
-			true
-		);
+			window.addEventListener('pointerup', onRelease, true);
+			window.addEventListener('pointercancel', onRelease, true);
+			window.addEventListener('blur', onBlurWhilePendingOrHold, false);
+		};
+		document.documentElement.addEventListener('pointerdown', onPointerDown, true);
+		holdListenerCleanup = () => {
+			document.documentElement.removeEventListener('pointerdown', onPointerDown, true);
+			cancelPendingHold();
+			tearDownReleaseListeners();
+			deactivateHoldPlayback();
+			holdListenersInstalled = false;
+			holdListenerCleanup = null;
+		};
 	}
 
 	function scheduleMountWork() {
@@ -5795,20 +5366,6 @@
 	}
 
 	function runMountWork() {
-		if (!isExplicitShortNav() && urlLockShortId && getCurrentShortId() !== urlLockShortId) {
-			enforceUrlLock();
-			syncCommentsOpenDocumentFlag();
-			revealActiveNativeRail();
-			syncToolboxLayoutWithNative();
-			return;
-		}
-		if (isLayoutSettling() && isRecentWindowResize() && !isExplicitShortNav()) {
-			syncCommentsOpenDocumentFlag();
-			holdPinnedShortInView();
-			revealActiveNativeRail();
-			syncToolboxLayoutWithNative();
-			return;
-		}
 		if (shouldDeferAutoAdvanceMount()) {
 			scheduleDeferredAutoAdvanceMount();
 			return;
@@ -5842,7 +5399,6 @@
 		if (!videoObserver) setupVideoHooks();
 		scheduleReapply();
 		applyToolboxPanelOpenState();
-		rememberLiveShortPin();
 		noteCurrentShortForComments();
 		if (pendingCommentsRefreshAfterAdvance) refreshCommentsPanelForCurrentShort();
 		revealActiveNativeRail();
@@ -5868,12 +5424,6 @@
 			// runs, so filter our own insert/remove records explicitly. Without
 			// this, every re-dock re-triggered mount work in a tight loop.
 			if (records.every(isOwnMutationRecord)) return;
-			syncWindowSnapLock();
-			if (!isExplicitShortNav() && urlLockShortId) {
-				enforceUrlLock();
-				return;
-			}
-			rememberLiveShortPin();
 			if (!(speedRootEl && speedRootEl.isConnected)) speedRootEl = null;
 			scheduleMountWork();
 		});
@@ -5885,8 +5435,6 @@
 			childList: true,
 			subtree: true,
 		});
-		ensureShortsResizeObserver();
-		ensureWindowBoxObserver();
 		ensureCommentsAttrObserver();
 		ensureNativeAnchorObserver();
 	}
@@ -5925,25 +5473,8 @@
 			clearTimeout(autoAdvanceMountTimer);
 			autoAdvanceMountTimer = null;
 		}
-		if (layoutResumeTimer) {
-			clearTimeout(layoutResumeTimer);
-			layoutResumeTimer = null;
-		}
-		if (restorePinnedRetryTimer) {
-			clearTimeout(restorePinnedRetryTimer);
-			restorePinnedRetryTimer = null;
-		}
-		stopResizeHoldLoop();
 		stopNativeAnchorFollow();
 		hideNativeVolumeHoverUi();
-		if (shortsResizeObserver) {
-			shortsResizeObserver.disconnect();
-			shortsResizeObserver = null;
-		}
-		if (windowBoxObserver) {
-			windowBoxObserver.disconnect();
-			windowBoxObserver = null;
-		}
 		if (nativeAnchorObserver) {
 			nativeAnchorObserver.disconnect();
 			nativeAnchorObserver = null;
@@ -5953,7 +5484,6 @@
 			commentsAttrObserver.disconnect();
 			commentsAttrObserver = null;
 		}
-		setResizeLock(false);
 		clearPostAdvanceRepairTimers();
 		if (commentsRefreshTimer) {
 			clearTimeout(commentsRefreshTimer);
@@ -5975,15 +5505,8 @@
 		}
 		document.removeEventListener('click', onDocumentClick, true);
 		document.removeEventListener('click', onCommentsUiPointer, true);
-		document.removeEventListener('click', onManualShortNavGesture, true);
 		document.removeEventListener('pointerdown', onCommentsUiPointer, true);
-		document.removeEventListener('bm-youtube-explicit-short-nav', onExplicitShortNavSignal, true);
 		document.removeEventListener('keydown', onDocumentKeydown, true);
-		document.removeEventListener('wheel', onManualShortNavGesture, true);
-		document.removeEventListener('pointerdown', onManualShortNavGesture, true);
-		document.removeEventListener('pointerup', onManualShortNavGesture, true);
-		document.removeEventListener('pointercancel', onManualShortNavGesture, true);
-		window.removeEventListener('popstate', onBrowserHistoryShortNavigation, true);
 		document.removeEventListener('scroll', onDocumentScrollForToolbox, true);
 		window.removeEventListener('resize', onWindowLayoutSettle, true);
 		window.removeEventListener('orientationchange', onWindowLayoutSettle, true);
@@ -6004,6 +5527,11 @@
 			chrome.runtime.onMessage.removeListener(runtimeMsgHandler);
 			runtimeMsgHandler = null;
 		}
+		if (storageChangeListener) {
+			chrome.storage.onChanged.removeListener(storageChangeListener);
+			storageChangeListener = null;
+		}
+		if (holdListenerCleanup) holdListenerCleanup();
 		window.removeEventListener('pageshow', startBootstrapRetries);
 		window.removeEventListener('yt-navigate-finish', onShortNavigateFinish);
 		window.removeEventListener('yt-navigate-start', onYtNavigateStart);
@@ -6036,7 +5564,6 @@
 		}
 		document.documentElement.removeAttribute(CONTROLLER_ATTR);
 		document.documentElement.removeAttribute(COMMENTS_OPEN_ATTR);
-		document.documentElement.removeAttribute(RESIZE_LOCK_ATTR);
 	}
 
 	function syncControllerAttr() {
@@ -6059,7 +5586,7 @@
 
 	function collectRailDiag() {
 		const urlId = getCurrentShortId();
-		const renderers = Array.from(document.querySelectorAll('ytd-reel-video-renderer'));
+		const renderers = querySelectorAllDeep('ytd-reel-video-renderer');
 		const describeRenderer = (r) => {
 			const rect = r.getBoundingClientRect();
 			return {
@@ -6155,14 +5682,6 @@
 	function maybeFollowCommentsForCurrentShort() {
 		const id = getCurrentShortId();
 		if (!id || id === 'short') return;
-		if (
-			urlLockShortId &&
-			urlLockShortId !== 'short' &&
-			id !== urlLockShortId &&
-			!isExplicitShortNav()
-		) {
-			return;
-		}
 		if (!(commentsWantedOpen || isCommentsPanelOpen())) {
 			lastCommentsFollowShortId = id;
 			return;
@@ -6185,13 +5704,6 @@
 
 	function tick() {
 		syncCommentsOpenDocumentFlag();
-		if (!isExplicitShortNav() && urlLockShortId) enforceUrlLock();
-		else if (isExplicitShortNav()) {
-			const now = getCurrentShortId();
-			if (now && now !== 'short' && now !== urlLockShortId) rememberLiveShortPin(true);
-		} else {
-			rememberLiveShortPin();
-		}
 		revealActiveNativeRail();
 		runMountWork();
 		syncPlayThroughShortId();
@@ -6257,8 +5769,6 @@
 		layout: lastLayoutDiag,
 	});
 	initObservers();
-	commitUrlLockFromLocation();
-	rememberLiveShortPin();
 	window.addEventListener('pageshow', startBootstrapRetries);
 	window.addEventListener('yt-navigate-finish', onShortNavigateFinish);
 	window.addEventListener('yt-navigate-start', onYtNavigateStart);
