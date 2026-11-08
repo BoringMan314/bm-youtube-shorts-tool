@@ -3065,6 +3065,31 @@
 		return matched;
 	}
 
+	function persistRememberedVolume(video, volume, muted) {
+		if (
+			!rememberVolumeSettingsReady ||
+			!rememberVolumeEnabled ||
+			video !== getActiveShortsVideo()
+		) {
+			return;
+		}
+		const pct = clampVolumePct(volume);
+		if (pct === null) return;
+		if (
+			volumeRestoreVideo === video &&
+			volumeRestoreTarget === pct &&
+			volumeRestoreMuted === muted
+		) {
+			return;
+		}
+		rememberedVolumePct = pct;
+		rememberedVolumeMuted = muted;
+		chrome.storage.local.set({
+			[STORAGE_KEY_REMEMBERED_VOLUME]: pct,
+			[STORAGE_KEY_REMEMBERED_MUTED]: muted,
+		});
+	}
+
 	function rememberVolumeFromVideo(video) {
 		if (
 			!rememberVolumeSettingsReady ||
@@ -3078,25 +3103,14 @@
 		// YouTube can report "unmuted" at 0% while retaining a prior audible
 		// level internally. Treat zero volume as muted so a reload never calls
 		// unMute() and revives that retained level behind the crossed icon.
-		const muted = volume === 0 || readNativeMuted(video);
-		if (
-			volumeRestoreVideo === video &&
-			volumeRestoreTarget === volume &&
-			volumeRestoreMuted === muted
-		) {
-			return;
-		}
-		rememberedVolumePct = volume;
-		rememberedVolumeMuted = muted;
-		chrome.storage.local.set({
-			[STORAGE_KEY_REMEMBERED_VOLUME]: volume,
-			[STORAGE_KEY_REMEMBERED_MUTED]: muted,
-		});
+		persistRememberedVolume(video, volume, volume === 0 || readNativeMuted(video));
 	}
 
 	function commitNativeVolumePct(pct) {
 		const n = clampVolumePct(pct);
 		if (n === null) return false;
+		const video = getActiveShortsVideo();
+		const api = getNativeYouTubePlayerApi(video);
 		const input = findNativeVolumeSlider();
 		if (input) {
 			try {
@@ -3117,21 +3131,24 @@
 				input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
 				input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
 			} catch (_) {}
-			showNativeVolumeHoverUi(n);
-			return true;
 		}
-		const api = getNativeYouTubePlayerApi(getActiveShortsVideo());
 		if (api && typeof api.setVolume === 'function') {
 			try {
 				api.setVolume(n);
-				if (n > 0 && typeof api.isMuted === 'function' && api.isMuted() && typeof api.unMute === 'function') {
-					api.unMute();
-				}
-		} catch (_) {}
-			showNativeVolumeHoverUi(n);
-		return true;
+				if (n === 0 && typeof api.mute === 'function') api.mute();
+				else if (n > 0 && typeof api.unMute === 'function') api.unMute();
+			} catch (_) {}
 		}
-		return false;
+		if (!input && !(api && typeof api.setVolume === 'function') && !video) return false;
+		if (video) {
+			try {
+				video.volume = n / 100;
+				video.muted = n === 0;
+			} catch (_) {}
+			persistRememberedVolume(video, n, n === 0);
+		}
+		showNativeVolumeHoverUi(n);
+		return true;
 	}
 
 	function showNativeVolumeHoverUi(nextPct) {
