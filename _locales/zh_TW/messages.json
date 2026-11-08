@@ -83,6 +83,9 @@
     "message": "[B.M] YouTube Shorts 工具箱",
     "description": "擴充功能彈出視窗標題。"
   },
+  "popupPlaybackGroup": { "message": "播放速度", "description": "播放速度設定群組標題。" },
+  "popupAutoplayGroup": { "message": "自動播放", "description": "自動播放設定群組標題。" },
+  "popupControlsGroup": { "message": "操作方式", "description": "操作方式設定群組標題。" },
   "popupAriaDefaultShortSpeedCycle": {
     "message": "循環預設 Shorts 倍速（1×、1.5×、2×、3×）",
     "description": "設定彈窗內預設倍速循環按鈕的無障礙標籤。"

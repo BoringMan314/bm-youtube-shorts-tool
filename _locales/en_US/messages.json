@@ -83,6 +83,9 @@
     "message": "[B.M] YouTube Shorts Toolbox",
     "description": "Title in extension popup."
   },
+  "popupPlaybackGroup": { "message": "PLAYBACK SPEED", "description": "Playback speed group heading." },
+  "popupAutoplayGroup": { "message": "AUTO-PLAY", "description": "Auto-play group heading." },
+  "popupControlsGroup": { "message": "CONTROLS", "description": "Controls group heading." },
   "popupAriaDefaultShortSpeedCycle": {
     "message": "Cycle default Shorts playback speed: 1×, 1.5×, 2×, 3×.",
     "description": "ARIA label for the default playback speed cycle button."

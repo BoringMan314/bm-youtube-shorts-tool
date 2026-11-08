@@ -83,6 +83,9 @@
     "message": "[B.M] YouTube Shorts ツールボックス",
     "description": "拡張機能ポップアップのタイトル。"
   },
+  "popupPlaybackGroup": { "message": "再生速度", "description": "再生速度グループの見出し。" },
+  "popupAutoplayGroup": { "message": "自動再生", "description": "自動再生グループの見出し。" },
+  "popupControlsGroup": { "message": "操作", "description": "操作グループの見出し。" },
   "popupAriaDefaultShortSpeedCycle": {
     "message": "ショートの既定再生速度を切り替えます（1×、1.5×、2×、3×）。",
     "description": "ポップアップの既定倍速ボタンの aria ラベル。"
