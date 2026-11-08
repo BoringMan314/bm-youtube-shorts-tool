@@ -75,6 +75,10 @@
     "message": "左右鍵控制音量（每次 5%）",
     "description": "彈出視窗中的左右鍵音量控制開關標籤。"
   },
+  "popupRememberVolumeLabel": {
+    "message": "記住音量",
+    "description": "彈出視窗中記住 Shorts 播放音量的開關標籤。"
+  },
   "popupPanelExpandRightLabel": {
     "message": "功能選單向右/上展開",
     "description": "彈出視窗中的選單展開方向開關標籤。"

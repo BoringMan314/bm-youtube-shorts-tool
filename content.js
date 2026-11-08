@@ -14,13 +14,31 @@
 	const TOOLBOX_ROLE = 'toolbox';
 	const SPEED3X_ROLE = 'speed';
 	const COMMENTS_OPEN_ATTR = 'data-bm-yts-comments-open';
-	const SPEED_STORAGE_KEY = 'bmYtsToolboxSpeed';
-	const VOLUME_HOTKEY_STORAGE_KEY = 'bmYtsArrowVolumeEnabled';
-	const PANEL_EXPAND_RIGHT_STORAGE_KEY = 'bmYtsPanelExpandRight';
-	const STORAGE_KEY_DEFAULT_SPEED_INDEX = 'bmYts3xOptsDefaultSpeedIndex';
-	const STORAGE_KEY_HOLD_SPEED_INDEX = 'bmYts3xOptsHoldSpeedIndex';
-	const STORAGE_KEY_AUTO_NEXT = 'bmYtsToolboxAutoNextEnabled';
-	const STORAGE_KEY_PLAY_COUNT_BEFORE_NEXT = 'bmYtsToolboxPlayCountBeforeNext';
+	const SPEED_STORAGE_KEY = 'bmYtsToolboxSpeedV2';
+	const IS_INCOGNITO_CONTEXT = chrome.extension?.inIncognitoContext === true;
+	const profileStorageKey = (key) => (IS_INCOGNITO_CONTEXT ? `${key}_incognito` : key);
+	const PROFILE_SETTINGS_VERSION_KEY = 'bmYtsSettingsSchema';
+	const PROFILE_SETTINGS_VERSION = 1;
+	const BASE_VOLUME_HOTKEY_STORAGE_KEY = 'bmYtsArrowVolumeEnabled';
+	const BASE_PANEL_EXPAND_RIGHT_STORAGE_KEY = 'bmYtsPanelExpandRight';
+	const BASE_STORAGE_KEY_DEFAULT_SPEED_INDEX = 'bmYts3xOptsDefaultSpeedIndex';
+	const BASE_STORAGE_KEY_HOLD_SPEED_INDEX = 'bmYts3xOptsHoldSpeedIndex';
+	const BASE_STORAGE_KEY_AUTO_NEXT = 'bmYtsToolboxAutoNextEnabled';
+	const BASE_STORAGE_KEY_PLAY_COUNT_BEFORE_NEXT = 'bmYtsToolboxPlayCountBeforeNext';
+	const BASE_STORAGE_KEY_REMEMBER_VOLUME = 'bmYtsRememberVolumeEnabled';
+	const BASE_STORAGE_KEY_REMEMBERED_VOLUME = 'bmYtsRememberedVolume';
+	const BASE_STORAGE_KEY_REMEMBERED_MUTED = 'bmYtsRememberedMuted';
+	const VOLUME_HOTKEY_STORAGE_KEY = profileStorageKey(BASE_VOLUME_HOTKEY_STORAGE_KEY);
+	const PANEL_EXPAND_RIGHT_STORAGE_KEY = profileStorageKey(BASE_PANEL_EXPAND_RIGHT_STORAGE_KEY);
+	const STORAGE_KEY_DEFAULT_SPEED_INDEX = profileStorageKey(BASE_STORAGE_KEY_DEFAULT_SPEED_INDEX);
+	const STORAGE_KEY_HOLD_SPEED_INDEX = profileStorageKey(BASE_STORAGE_KEY_HOLD_SPEED_INDEX);
+	const STORAGE_KEY_AUTO_NEXT = profileStorageKey(BASE_STORAGE_KEY_AUTO_NEXT);
+	const STORAGE_KEY_PLAY_COUNT_BEFORE_NEXT = profileStorageKey(
+		BASE_STORAGE_KEY_PLAY_COUNT_BEFORE_NEXT
+	);
+	const STORAGE_KEY_REMEMBER_VOLUME = profileStorageKey(BASE_STORAGE_KEY_REMEMBER_VOLUME);
+	const STORAGE_KEY_REMEMBERED_VOLUME = profileStorageKey(BASE_STORAGE_KEY_REMEMBERED_VOLUME);
+	const STORAGE_KEY_REMEMBERED_MUTED = profileStorageKey(BASE_STORAGE_KEY_REMEMBERED_MUTED);
 	const FALLBACK_MESSAGES = {
 		zhTW: {
 			ariaDownload: '下載', ariaFrameStep: '逐幀播放', ariaPlaybackSpeed: '播放速度',
@@ -82,7 +100,7 @@
 	let holdActive = false;
 	let holdPointerId = null;
 	let holdSpeedIndex = 2;
-	let autoNextEnabled = false;
+	let autoNextEnabled = true;
 	let playCountBeforeNext = 2;
 	let playThroughCount = 0;
 	let playThroughShortId = '';
@@ -114,6 +132,43 @@
 		const v = Number(n);
 		if (!Number.isFinite(v)) return 2;
 		return Math.max(1, Math.min(999, Math.floor(v)));
+	}
+
+	function loadProfileSettings(defaults, callback) {
+		const profileDefaults = Object.fromEntries(
+			Object.entries(defaults).map(([key, value]) => [profileStorageKey(key), value])
+		);
+		const allProfileDefaults = {};
+		for (const [key, value] of Object.entries(defaults)) {
+			allProfileDefaults[key] = value;
+			allProfileDefaults[`${key}_incognito`] = value;
+		}
+		const loadValues = () => {
+			chrome.storage.local.get(profileDefaults, (values) => {
+				callback(chrome.runtime.lastError ? profileDefaults : values);
+			});
+		};
+		try {
+			chrome.storage.local.get(PROFILE_SETTINGS_VERSION_KEY, (res) => {
+				if (chrome.runtime.lastError) {
+					loadValues();
+					return;
+				}
+				if (res[PROFILE_SETTINGS_VERSION_KEY] === PROFILE_SETTINGS_VERSION) {
+					loadValues();
+					return;
+				}
+				chrome.storage.local.set(
+					{
+						...allProfileDefaults,
+						[PROFILE_SETTINGS_VERSION_KEY]: PROFILE_SETTINGS_VERSION,
+					},
+					loadValues
+				);
+			});
+		} catch (_) {
+			callback(profileDefaults);
+		}
 	}
 
 	function attachBoundedRecorderChunkCollector(recorder, chunks, onLimit) {
@@ -220,25 +275,47 @@
 	let volumeHoverPct = 0;
 	let volumeHoverPaintTimer = null;
 	let volumeHoverFocusedEl = null;
+	let rememberVolumeEnabled = true;
+	let rememberedVolumePct = null;
+	let rememberedVolumeMuted = null;
+	let rememberVolumeSettingsReady = false;
+	let volumeRestoreVideo = null;
+	let volumeRestoreTarget = null;
+	let volumeRestoreMuted = null;
+	const restoredVolumeSources = new WeakMap();
+	const pendingVolumeRestoreSources = new WeakMap();
 
 	function loadArrowVolumeSetting() {
 		try {
-			chrome.storage.local.get(
+			loadProfileSettings(
 				{
-					[VOLUME_HOTKEY_STORAGE_KEY]: true,
-					[PANEL_EXPAND_RIGHT_STORAGE_KEY]: true,
-					[STORAGE_KEY_DEFAULT_SPEED_INDEX]: 0,
-					[STORAGE_KEY_HOLD_SPEED_INDEX]: 2,
-					[STORAGE_KEY_AUTO_NEXT]: false,
-					[STORAGE_KEY_PLAY_COUNT_BEFORE_NEXT]: 2,
+					[BASE_VOLUME_HOTKEY_STORAGE_KEY]: true,
+					[BASE_PANEL_EXPAND_RIGHT_STORAGE_KEY]: true,
+					[BASE_STORAGE_KEY_DEFAULT_SPEED_INDEX]: 0,
+					[BASE_STORAGE_KEY_HOLD_SPEED_INDEX]: 2,
+					[BASE_STORAGE_KEY_AUTO_NEXT]: true,
+					[BASE_STORAGE_KEY_PLAY_COUNT_BEFORE_NEXT]: 2,
+					[BASE_STORAGE_KEY_REMEMBER_VOLUME]: true,
+					[BASE_STORAGE_KEY_REMEMBERED_VOLUME]: null,
+					[BASE_STORAGE_KEY_REMEMBERED_MUTED]: null,
 				},
 				(res) => {
-					if (chrome.runtime.lastError) return;
+					if (!res) return;
 					leftRightVolumeEnabled = res[VOLUME_HOTKEY_STORAGE_KEY] !== false;
 					panelExpandRightEnabled = res[PANEL_EXPAND_RIGHT_STORAGE_KEY] !== false;
 					holdSpeedIndex = clampSpeedIndex(res[STORAGE_KEY_HOLD_SPEED_INDEX]);
 					autoNextEnabled = res[STORAGE_KEY_AUTO_NEXT] === true;
 					playCountBeforeNext = clampPlayCount(res[STORAGE_KEY_PLAY_COUNT_BEFORE_NEXT]);
+					rememberVolumeEnabled = res[STORAGE_KEY_REMEMBER_VOLUME] !== false;
+					rememberedVolumePct = clampVolumePct(res[STORAGE_KEY_REMEMBERED_VOLUME]);
+					const storedMuted = res[STORAGE_KEY_REMEMBERED_MUTED];
+					rememberedVolumeMuted = rememberedVolumePct === 0
+						? true
+						: typeof storedMuted === 'boolean' ? storedMuted : null;
+					if (rememberedVolumePct === 0 && storedMuted !== true) {
+						chrome.storage.local.set({ [STORAGE_KEY_REMEMBERED_MUTED]: true });
+					}
+					rememberVolumeSettingsReady = true;
 					const sess = readSessionIndex();
 					if (sess !== null) {
 						currentIndex = sess;
@@ -251,11 +328,13 @@
 					}
 					updateSpeedUiLockedState();
 					applyToActiveShortsVideo();
+					scheduleRememberedVolumeRestore(getActiveShortsVideo());
 				}
 			);
 		} catch (_) {
 			leftRightVolumeEnabled = true;
 			panelExpandRightEnabled = true;
+			rememberVolumeSettingsReady = true;
 		}
 	}
 
@@ -289,6 +368,35 @@
 				}
 				if (changes[STORAGE_KEY_PLAY_COUNT_BEFORE_NEXT]) {
 					playCountBeforeNext = clampPlayCount(changes[STORAGE_KEY_PLAY_COUNT_BEFORE_NEXT].newValue);
+				}
+				if (changes[STORAGE_KEY_REMEMBER_VOLUME]) {
+					rememberVolumeEnabled = changes[STORAGE_KEY_REMEMBER_VOLUME].newValue !== false;
+					if (rememberVolumeEnabled) {
+						chrome.storage.local.get(
+							[STORAGE_KEY_REMEMBERED_VOLUME, STORAGE_KEY_REMEMBERED_MUTED],
+							(res) => {
+							const muted = res[STORAGE_KEY_REMEMBERED_MUTED];
+							rememberedVolumePct = clampVolumePct(res[STORAGE_KEY_REMEMBERED_VOLUME]);
+							rememberedVolumeMuted = rememberedVolumePct === 0
+								? true
+								: typeof muted === 'boolean' ? muted : null;
+							if (rememberedVolumePct === 0 && muted !== true) {
+								chrome.storage.local.set({ [STORAGE_KEY_REMEMBERED_MUTED]: true });
+							}
+							scheduleRememberedVolumeRestore(getActiveShortsVideo());
+							}
+						);
+					}
+				}
+				if (changes[STORAGE_KEY_REMEMBERED_VOLUME]) {
+					rememberedVolumePct = clampVolumePct(
+						changes[STORAGE_KEY_REMEMBERED_VOLUME].newValue
+					);
+				}
+				if (changes[STORAGE_KEY_REMEMBERED_MUTED]) {
+					const muted = changes[STORAGE_KEY_REMEMBERED_MUTED].newValue;
+					rememberedVolumeMuted = typeof muted === 'boolean' ? muted : null;
+					if (rememberedVolumeMuted === null) rememberedVolumePct = null;
 				}
 				if (changes[STORAGE_KEY_DEFAULT_SPEED_INDEX]) {
 					const next = clampSpeedIndex(changes[STORAGE_KEY_DEFAULT_SPEED_INDEX].newValue);
@@ -2826,6 +2934,7 @@
 	}
 
 	function clampVolumePct(n) {
+		if (n === null || n === undefined || n === '') return null;
 		const v = Number(n);
 		if (!Number.isFinite(v)) return null;
 		return Math.max(0, Math.min(100, Math.round(v)));
@@ -2852,6 +2961,137 @@
 			}
 		} catch (_) {}
 		return null;
+	}
+
+	function readNativeMuted(video) {
+		const api = getNativeYouTubePlayerApi(video);
+		try {
+			if (api && typeof api.isMuted === 'function') return api.isMuted();
+		} catch (_) {}
+		return !!video.muted;
+	}
+
+	function scheduleRememberedVolumeRestore(video) {
+		if (
+			!(video instanceof HTMLVideoElement) ||
+			!rememberVolumeSettingsReady ||
+			!rememberVolumeEnabled ||
+			rememberedVolumePct === null
+		) return;
+		const source = video.currentSrc || video.src;
+		if (
+			!source ||
+			restoredVolumeSources.get(video) === source ||
+			pendingVolumeRestoreSources.get(video) === source
+		) return;
+		pendingVolumeRestoreSources.set(video, source);
+		let attempts = 0;
+		const restore = () => {
+			if (pendingVolumeRestoreSources.get(video) !== source) return;
+			if (
+				video !== getActiveShortsVideo() ||
+				(video.currentSrc || video.src) !== source
+			) {
+				pendingVolumeRestoreSources.delete(video);
+				return;
+			}
+			const matched = restoreRememberedVolume(video);
+			attempts += 1;
+			if (attempts < 8) {
+				setTimeout(restore, attempts < 3 ? 200 : 400);
+			} else {
+				pendingVolumeRestoreSources.delete(video);
+				if (matched) restoredVolumeSources.set(video, source);
+			}
+		};
+		setTimeout(restore, 0);
+	}
+
+	function restoreRememberedVolume(video) {
+		if (
+			!rememberVolumeSettingsReady ||
+			!rememberVolumeEnabled ||
+			rememberedVolumePct === null ||
+			video !== getActiveShortsVideo()
+		) {
+			return false;
+		}
+		const volume = clampVolumePct(rememberedVolumePct);
+		if (volume === null) return false;
+		const muted = rememberedVolumeMuted;
+		volumeRestoreVideo = video;
+		volumeRestoreTarget = volume;
+		volumeRestoreMuted = muted;
+		const api = getNativeYouTubePlayerApi(video);
+		let matched = false;
+		try {
+			if (api && typeof api.setVolume === 'function') {
+				api.setVolume(volume);
+				if (muted === true && typeof api.mute === 'function') api.mute();
+				else if (muted === false && typeof api.unMute === 'function') api.unMute();
+				// Also update the active media element: Shorts can leave the HTML5
+				// video audible even when the player API's mute state is stale.
+				video.volume = volume / 100;
+				if (muted !== null) video.muted = muted;
+				matched =
+					clampVolumePct(api.getVolume()) === volume &&
+					(muted === null ||
+						(typeof api.isMuted === 'function' ? api.isMuted() === muted : video.muted === muted)) &&
+					Math.round(video.volume * 100) === volume &&
+					(muted === null || video.muted === muted);
+			} else {
+				video.volume = volume / 100;
+				if (muted !== null) video.muted = muted;
+				matched =
+					Math.round(video.volume * 100) === volume &&
+					(muted === null || video.muted === muted);
+			}
+		} catch (_) {
+			try {
+				video.volume = volume / 100;
+				if (muted !== null) video.muted = muted;
+				matched =
+					Math.round(video.volume * 100) === volume &&
+					(muted === null || video.muted === muted);
+			} catch (_) {}
+		}
+		setTimeout(() => {
+			if (volumeRestoreVideo === video) {
+				volumeRestoreVideo = null;
+				volumeRestoreTarget = null;
+				volumeRestoreMuted = null;
+			}
+		}, 800);
+		return matched;
+	}
+
+	function rememberVolumeFromVideo(video) {
+		if (
+			!rememberVolumeSettingsReady ||
+			!rememberVolumeEnabled ||
+			video !== getActiveShortsVideo()
+		) {
+			return;
+		}
+		const volume = readNativeVolumePct();
+		if (volume === null) return;
+		// YouTube can report "unmuted" at 0% while retaining a prior audible
+		// level internally. Treat zero volume as muted so a reload never calls
+		// unMute() and revives that retained level behind the crossed icon.
+		const muted = volume === 0 || readNativeMuted(video);
+		if (
+			volumeRestoreVideo === video &&
+			volumeRestoreTarget === volume &&
+			volumeRestoreMuted === muted
+		) {
+			return;
+		}
+		rememberedVolumePct = volume;
+		rememberedVolumeMuted = muted;
+		chrome.storage.local.set({
+			[STORAGE_KEY_REMEMBERED_VOLUME]: volume,
+			[STORAGE_KEY_REMEMBERED_MUTED]: muted,
+		});
 	}
 
 	function commitNativeVolumePct(pct) {
@@ -4413,8 +4653,9 @@
 		}
 		for (const [video, handlers] of hookedVideos) {
 			video.removeEventListener('ratechange', handlers.ratechange);
-			video.removeEventListener('loadedmetadata', handlers.scheduleReapply);
-			video.removeEventListener('playing', handlers.scheduleReapply);
+			video.removeEventListener('loadedmetadata', handlers.loadedmetadata);
+			video.removeEventListener('playing', handlers.playing);
+			video.removeEventListener('volumechange', handlers.volumechange);
 			video.removeEventListener('timeupdate', handlers.timeupdate);
 			video.removeEventListener('seeked', handlers.timeupdate);
 			video.removeEventListener('ended', handlers.ended);
@@ -4433,7 +4674,15 @@
 				const want = getEffectivePlaybackRate();
 				if (Math.abs(v.playbackRate - want) > 0.01) applyPlaybackRateTo(v);
 			},
-			scheduleReapply,
+			loadedmetadata: () => {
+				scheduleReapply();
+				scheduleRememberedVolumeRestore(v);
+			},
+			playing: () => {
+				scheduleReapply();
+				scheduleRememberedVolumeRestore(v);
+			},
+			volumechange: () => rememberVolumeFromVideo(v),
 			timeupdate: () => onHookedVideoTimeUpdate(v),
 			ended: () => {
 				const active = getActiveShortsVideo();
@@ -4443,19 +4692,22 @@
 		};
 		hookedVideos.set(v, handlers);
 		v.addEventListener('ratechange', handlers.ratechange);
-		v.addEventListener('loadedmetadata', handlers.scheduleReapply);
-		v.addEventListener('playing', handlers.scheduleReapply);
+		v.addEventListener('loadedmetadata', handlers.loadedmetadata);
+		v.addEventListener('playing', handlers.playing);
+		v.addEventListener('volumechange', handlers.volumechange);
 		v.addEventListener('timeupdate', handlers.timeupdate);
 		v.addEventListener('seeked', handlers.timeupdate);
 		v.addEventListener('ended', handlers.ended);
+		scheduleRememberedVolumeRestore(v);
 	}
 
 	function unhookVideoElement(v) {
 		const handlers = hookedVideos.get(v);
 		if (!handlers) return;
 		v.removeEventListener('ratechange', handlers.ratechange);
-		v.removeEventListener('loadedmetadata', handlers.scheduleReapply);
-		v.removeEventListener('playing', handlers.scheduleReapply);
+		v.removeEventListener('loadedmetadata', handlers.loadedmetadata);
+		v.removeEventListener('playing', handlers.playing);
+		v.removeEventListener('volumechange', handlers.volumechange);
 		v.removeEventListener('timeupdate', handlers.timeupdate);
 		v.removeEventListener('seeked', handlers.timeupdate);
 		v.removeEventListener('ended', handlers.ended);

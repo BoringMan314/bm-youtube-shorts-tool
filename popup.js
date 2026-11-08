@@ -7,6 +7,11 @@ const STORAGE_KEY_DEFAULT_SPEED_INDEX = 'bmYts3xOptsDefaultSpeedIndex';
 const STORAGE_KEY_HOLD_SPEED_INDEX = 'bmYts3xOptsHoldSpeedIndex';
 const STORAGE_KEY_AUTO_NEXT = 'bmYtsToolboxAutoNextEnabled';
 const STORAGE_KEY_LOOP_COUNT = 'bmYtsToolboxPlayCountBeforeNext';
+const STORAGE_KEY_REMEMBER_VOLUME = 'bmYtsRememberVolumeEnabled';
+const STORAGE_KEY_REMEMBERED_VOLUME = 'bmYtsRememberedVolume';
+const STORAGE_KEY_REMEMBERED_MUTED = 'bmYtsRememberedMuted';
+const PROFILE_SETTINGS_VERSION_KEY = 'bmYtsSettingsSchema';
+const PROFILE_SETTINGS_VERSION = 1;
 
 function t(key) {
 	try {
@@ -27,6 +32,36 @@ function clampLoopCount(n) {
 	const v = Number(n);
 	if (!Number.isFinite(v)) return 2;
 	return Math.max(1, Math.min(999, Math.floor(v)));
+}
+
+function profileStorageKey(key, isIncognito) {
+	return isIncognito ? `${key}_incognito` : key;
+}
+
+async function loadProfileSettings(defaults, isIncognito) {
+	const keys = Object.fromEntries(
+		Object.keys(defaults).map((key) => [key, profileStorageKey(key, isIncognito)])
+	);
+	const allProfileDefaults = {};
+	for (const [key, value] of Object.entries(defaults)) {
+		allProfileDefaults[key] = value;
+		allProfileDefaults[profileStorageKey(key, true)] = value;
+	}
+	const profileDefaults = Object.fromEntries(
+		Object.entries(defaults).map(([key, value]) => [keys[key], value])
+	);
+	try {
+		const stored = await chrome.storage.local.get(PROFILE_SETTINGS_VERSION_KEY);
+		if (stored[PROFILE_SETTINGS_VERSION_KEY] !== PROFILE_SETTINGS_VERSION) {
+			await chrome.storage.local.set({
+				...allProfileDefaults,
+				[PROFILE_SETTINGS_VERSION_KEY]: PROFILE_SETTINGS_VERSION,
+			});
+		}
+		return { keys, values: await chrome.storage.local.get(profileDefaults) };
+	} catch (_) {
+		return { keys, values: profileDefaults };
+	}
 }
 
 function formatSpeedLabel(s) {
@@ -50,9 +85,10 @@ function applyI18n() {
 	});
 }
 
-function init() {
+async function init() {
 	applyI18n();
 	const toggleArrow = document.getElementById('toggleArrowVolume');
+	const toggleRememberVolume = document.getElementById('toggleRememberVolume');
 	const togglePanelRight = document.getElementById('togglePanelExpandRight');
 	const toggleAutoNext = document.getElementById('toggleAutoNext');
 	const btnDef = document.getElementById('btnDefaultSpeed');
@@ -62,6 +98,7 @@ function init() {
 	const inputLoopCount = document.getElementById('inputLoopCount');
 	if (
 		!(toggleArrow instanceof HTMLInputElement) ||
+		!(toggleRememberVolume instanceof HTMLInputElement) ||
 		!(togglePanelRight instanceof HTMLInputElement) ||
 		!(toggleAutoNext instanceof HTMLInputElement) ||
 		!(btnDef instanceof HTMLButtonElement) ||
@@ -74,6 +111,21 @@ function init() {
 
 	let defaultIdx = 0;
 	let holdIdx = 2;
+	const isIncognito = chrome.extension?.inIncognitoContext === true;
+	const { keys, values } = await loadProfileSettings(
+		{
+			[STORAGE_KEY_ARROW_VOLUME]: true,
+			[STORAGE_KEY_REMEMBER_VOLUME]: true,
+			[STORAGE_KEY_REMEMBERED_VOLUME]: null,
+			[STORAGE_KEY_REMEMBERED_MUTED]: null,
+			[STORAGE_KEY_PANEL_RIGHT]: true,
+			[STORAGE_KEY_DEFAULT_SPEED_INDEX]: 0,
+			[STORAGE_KEY_HOLD_SPEED_INDEX]: 2,
+			[STORAGE_KEY_AUTO_NEXT]: true,
+			[STORAGE_KEY_LOOP_COUNT]: 2,
+		},
+		isIncognito
+	);
 
 	function syncSpeedLabels() {
 		lblDef.textContent = formatSpeedLabel(SPEEDS[defaultIdx]);
@@ -89,58 +141,50 @@ function init() {
 	function persistLoopCount() {
 		const n = clampLoopCount(inputLoopCount.value);
 		inputLoopCount.value = String(n);
-		chrome.storage.local.set({ [STORAGE_KEY_LOOP_COUNT]: n });
+		chrome.storage.local.set({ [keys[STORAGE_KEY_LOOP_COUNT]]: n });
 	}
 
-	chrome.storage.local.get(
-		{
-			[STORAGE_KEY_ARROW_VOLUME]: true,
-			[STORAGE_KEY_PANEL_RIGHT]: true,
-			[STORAGE_KEY_DEFAULT_SPEED_INDEX]: 0,
-			[STORAGE_KEY_HOLD_SPEED_INDEX]: 2,
-			[STORAGE_KEY_AUTO_NEXT]: false,
-			[STORAGE_KEY_LOOP_COUNT]: 2,
-		},
-		(res) => {
-			if (chrome.runtime.lastError) return;
-			toggleArrow.checked = res[STORAGE_KEY_ARROW_VOLUME] !== false;
-			togglePanelRight.checked = res[STORAGE_KEY_PANEL_RIGHT] !== false;
-			toggleAutoNext.checked = res[STORAGE_KEY_AUTO_NEXT] === true;
-			defaultIdx = clampIndex(res[STORAGE_KEY_DEFAULT_SPEED_INDEX]);
-			holdIdx = clampIndex(res[STORAGE_KEY_HOLD_SPEED_INDEX]);
-			inputLoopCount.value = String(clampLoopCount(res[STORAGE_KEY_LOOP_COUNT]));
-			syncSpeedLabels();
-			syncLoopCountEnabled();
-		}
-	);
+	toggleArrow.checked = values[keys[STORAGE_KEY_ARROW_VOLUME]] !== false;
+	toggleRememberVolume.checked = values[keys[STORAGE_KEY_REMEMBER_VOLUME]] !== false;
+	togglePanelRight.checked = values[keys[STORAGE_KEY_PANEL_RIGHT]] !== false;
+	toggleAutoNext.checked = values[keys[STORAGE_KEY_AUTO_NEXT]] === true;
+	defaultIdx = clampIndex(values[keys[STORAGE_KEY_DEFAULT_SPEED_INDEX]]);
+	holdIdx = clampIndex(values[keys[STORAGE_KEY_HOLD_SPEED_INDEX]]);
+	inputLoopCount.value = String(clampLoopCount(values[keys[STORAGE_KEY_LOOP_COUNT]]));
+	syncSpeedLabels();
+	syncLoopCountEnabled();
 
 	toggleArrow.addEventListener('change', () => {
-		chrome.storage.local.set({ [STORAGE_KEY_ARROW_VOLUME]: toggleArrow.checked });
+		chrome.storage.local.set({ [keys[STORAGE_KEY_ARROW_VOLUME]]: toggleArrow.checked });
+	});
+	toggleRememberVolume.addEventListener('change', () => {
+		chrome.storage.local.set({ [keys[STORAGE_KEY_REMEMBER_VOLUME]]: toggleRememberVolume.checked });
 	});
 	togglePanelRight.addEventListener('change', () => {
-		chrome.storage.local.set({ [STORAGE_KEY_PANEL_RIGHT]: togglePanelRight.checked });
+		chrome.storage.local.set({ [keys[STORAGE_KEY_PANEL_RIGHT]]: togglePanelRight.checked });
 	});
 	toggleAutoNext.addEventListener('change', () => {
-		chrome.storage.local.set({ [STORAGE_KEY_AUTO_NEXT]: toggleAutoNext.checked });
+		chrome.storage.local.set({ [keys[STORAGE_KEY_AUTO_NEXT]]: toggleAutoNext.checked });
 		syncLoopCountEnabled();
 	});
 	btnDef.addEventListener('click', () => {
 		defaultIdx = (defaultIdx + 1) % SPEEDS.length;
 		syncSpeedLabels();
 		chrome.storage.local.set({
-			[STORAGE_KEY_DEFAULT_SPEED_INDEX]: defaultIdx,
+			[keys[STORAGE_KEY_DEFAULT_SPEED_INDEX]]: defaultIdx,
 		});
 	});
 	chrome.storage.onChanged.addListener((changes, areaName) => {
-		if (areaName !== 'local' || !changes[STORAGE_KEY_DEFAULT_SPEED_INDEX]) return;
-		defaultIdx = clampIndex(changes[STORAGE_KEY_DEFAULT_SPEED_INDEX].newValue);
+		const key = keys[STORAGE_KEY_DEFAULT_SPEED_INDEX];
+		if (areaName !== 'local' || !changes[key]) return;
+		defaultIdx = clampIndex(changes[key].newValue);
 		syncSpeedLabels();
 	});
 	btnHold.addEventListener('click', () => {
 		holdIdx = (holdIdx + 1) % SPEEDS.length;
 		syncSpeedLabels();
 		chrome.storage.local.set({
-			[STORAGE_KEY_HOLD_SPEED_INDEX]: holdIdx,
+			[keys[STORAGE_KEY_HOLD_SPEED_INDEX]]: holdIdx,
 		});
 	});
 	inputLoopCount.addEventListener('change', persistLoopCount);

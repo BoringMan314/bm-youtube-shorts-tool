@@ -75,6 +75,10 @@
     "message": "左右キーで音量調整（1回 5%）",
     "description": "ポップアップ内の左右キー音量トグルのラベル。"
   },
+  "popupRememberVolumeLabel": {
+    "message": "音量を記憶",
+    "description": "Shorts の音量記憶トグルのラベル。"
+  },
   "popupPanelExpandRightLabel": {
     "message": "機能メニューを右/上に展開",
     "description": "ポップアップ内のメニュー展開方向トグルのラベル。"
