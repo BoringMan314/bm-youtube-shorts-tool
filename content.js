@@ -278,6 +278,8 @@
 	let rememberVolumeEnabled = true;
 	let rememberedVolumePct = null;
 	let rememberedVolumeMuted = null;
+	let rememberedVolumeWriteTimer = null;
+	let pendingRememberedVolume = null;
 	let rememberVolumeSettingsReady = false;
 	let volumeRestoreVideo = null;
 	let volumeRestoreTarget = null;
@@ -371,6 +373,11 @@
 				}
 				if (changes[STORAGE_KEY_REMEMBER_VOLUME]) {
 					rememberVolumeEnabled = changes[STORAGE_KEY_REMEMBER_VOLUME].newValue !== false;
+					if (!rememberVolumeEnabled) {
+						pendingRememberedVolume = null;
+						if (rememberedVolumeWriteTimer) clearTimeout(rememberedVolumeWriteTimer);
+						rememberedVolumeWriteTimer = null;
+					}
 					if (rememberVolumeEnabled) {
 						chrome.storage.local.get(
 							[STORAGE_KEY_REMEMBERED_VOLUME, STORAGE_KEY_REMEMBERED_MUTED],
@@ -389,11 +396,17 @@
 					}
 				}
 				if (changes[STORAGE_KEY_REMEMBERED_VOLUME]) {
+					pendingRememberedVolume = null;
+					if (rememberedVolumeWriteTimer) clearTimeout(rememberedVolumeWriteTimer);
+					rememberedVolumeWriteTimer = null;
 					rememberedVolumePct = clampVolumePct(
 						changes[STORAGE_KEY_REMEMBERED_VOLUME].newValue
 					);
 				}
 				if (changes[STORAGE_KEY_REMEMBERED_MUTED]) {
+					pendingRememberedVolume = null;
+					if (rememberedVolumeWriteTimer) clearTimeout(rememberedVolumeWriteTimer);
+					rememberedVolumeWriteTimer = null;
 					const muted = changes[STORAGE_KEY_REMEMBERED_MUTED].newValue;
 					rememberedVolumeMuted = typeof muted === 'boolean' ? muted : null;
 					if (rememberedVolumeMuted === null) rememberedVolumePct = null;
@@ -3075,19 +3088,36 @@
 		}
 		const pct = clampVolumePct(volume);
 		if (pct === null) return;
+		const isMuted = Boolean(muted);
 		if (
 			volumeRestoreVideo === video &&
 			volumeRestoreTarget === pct &&
-			volumeRestoreMuted === muted
+			volumeRestoreMuted === isMuted
 		) {
 			return;
 		}
+		if (rememberedVolumePct === pct && rememberedVolumeMuted === isMuted) return;
 		rememberedVolumePct = pct;
-		rememberedVolumeMuted = muted;
-		chrome.storage.local.set({
-			[STORAGE_KEY_REMEMBERED_VOLUME]: pct,
-			[STORAGE_KEY_REMEMBERED_MUTED]: muted,
-		});
+		rememberedVolumeMuted = isMuted;
+		pendingRememberedVolume = { pct, muted: isMuted };
+		if (rememberedVolumeWriteTimer) clearTimeout(rememberedVolumeWriteTimer);
+		rememberedVolumeWriteTimer = setTimeout(flushRememberedVolume, 200);
+	}
+
+	function flushRememberedVolume() {
+		if (rememberedVolumeWriteTimer) {
+			clearTimeout(rememberedVolumeWriteTimer);
+			rememberedVolumeWriteTimer = null;
+		}
+		const pending = pendingRememberedVolume;
+		pendingRememberedVolume = null;
+		if (!pending || !rememberVolumeSettingsReady || !rememberVolumeEnabled) return;
+		try {
+			Promise.resolve(chrome.storage.local.set({
+				[STORAGE_KEY_REMEMBERED_VOLUME]: pending.pct,
+				[STORAGE_KEY_REMEMBERED_MUTED]: pending.muted,
+			})).catch(() => {});
+		} catch (_) {}
 	}
 
 	function rememberVolumeFromVideo(video) {
@@ -4997,6 +5027,7 @@
 	}
 
 	function destroyInstance() {
+		flushRememberedVolume();
 		if (mountObserver) {
 			mountObserver.disconnect();
 			mountObserver = null;
